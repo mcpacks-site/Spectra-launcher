@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spectra Launcher</title>
+    <style>
+        :root {
+            --bg-dark: #121212;
+            --bg-card: #1e1e1e;
+            --bg-code: #252526;
+            --text-main: #e0e0e0;
+            --text-muted: #a0a0a0;
+            --accent: #007acc;
+            --accent-hover: #0098ff;
+            --border: #333333;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+        }
+
+        header {
+            background-color: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+            padding: 2rem 1rem;
+            text-align: center;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 2.5rem;
+            color: #fff;
+        }
+
+        header p {
+            margin: 0.5rem 0 0;
+            color: var(--text-muted);
+            font-size: 1.1rem;
+        }
+
+        .container {
+            max-width: 960px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 2rem;
+        }
+
+        @media (min-width: 768px) {
+            .grid {
+                grid-template-columns: 2fr 1fr;
+            }
+        }
+
+        section {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        h2 {
+            margin-top: 0;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+            color: #fff;
+        }
+
+        ul {
+            padding-left: 1.2rem;
+        }
+
+        li {
+            margin-bottom: 0.5rem;
+        }
+
+        .feature-tag {
+            background: #2d3748;
+            color: #cbd5e0;
+            padding: 0.2rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            display: inline-block;
+            margin-right: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        code {
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            background-color: var(--bg-code);
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+
+        .app-screenshot {
+            width: 100%;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            margin-top: 1rem;
+        }
+
+        .quick-setup-box {
+            background-color: var(--bg-code);
+            border-left: 4px solid var(--accent);
+            padding: 1rem;
+            border-radius: 0 4px 4px 0;
+        }
+
+        .quick-setup-box h3 {
+            margin-top: 0;
+            color: #fff;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 2rem 0;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            border-top: 1px solid var(--border);
+            margin-top: 4rem;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>Spectra Launcher</h1>
+        <p>A lightweight, Prism-inspired custom desktop launcher for Minecraft Fabric</p>
+    </header>
+
+    <div class="container">
+        <div class="grid">
+            
+            <!-- Left Column: Detailed Explanation -->
+            <main>
+                <section id="about">
+                    <h2>Overview</h2>
+                    <p>
+                        <strong>Spectra Launcher</strong> is a pure Python 3 application built entirely with <code>tkinter</code>. 
+                        It functions as a standalone, dependency-free environment designed to manage multiple segregated Minecraft 
+                        game installations (instances). Each instance safely maintains its own individual game directories, 
+                        mod sets, versions, allocating dedicated Java arguments, and runtime variables.
+                    </p>
+                    <p>
+                        The launcher prioritizes a clean, automated background management architecture. It dynamically scrapes official 
+                        Mojang manifests and the Fabric Meta API to resolve assets, libraries, and loader versions completely on the fly.
+                    </p>
+                </section>
+
+                <section id="features">
+                    <h2>Core Features</h2>
+                    <ul>
+                        <li><strong>Multi-Instance Isolated Sandboxing:</strong> Spin up distinct isolated folders matching unique profiles with specific game versions, Modrinth setups, and memory caps.</li>
+                        <li><strong>Automated Dependency Engine:</strong> Downloads core Minecraft game clients, Mojang runtime infrastructure, native assemblies, libraries, and indexes asset distributions directly from cloud hosts.</li>
+                        <li><strong>Modrinth API Mod Manager:</strong> An integrated mod portal enabling seamless real-time search queries and download scripts directly via Modrinth. Installs matching versions and automatically parses complex dependency chains to pull required runtime frameworks.</li>
+                        <li><strong>Flexible Authorization Modes:</strong> Fully supports official Microsoft Account authentication using secure asynchronous device-code flow handshakes. Legacy offline user accounts are also built-in for rapid local debugging, snapshot trials, or offline servers.</li>
+                        <li><strong>Managed Runtime Handling:</strong> Checks systemic host environments automatically. If existing localized system versions fall short of version baselines, the script pulls matching sandboxed Eclipse Temurin runtime builds cleanly into local system directories.</li>
+                    </ul>
+                </section>
+
+                <section id="technical">
+                    <h2>Architecture & Technical Specs</h2>
+                    <p>
+                        Built from the ground up for maximum portability and zero setup overhead, the code framework strictly features native libraries:
+                    </p>
+                    <div>
+                        <span class="feature-tag">Python 3.8+ Native</span>
+                        <span class="feature-tag">Tkinter Core GUI</span>
+                        <span class="feature-tag">Zero Pipeline Dependencies</span>
+                        <span class="feature-tag">Multi-Threaded Downloader</span>
+                        <span class="feature-tag">Cross-Platform (macOS / Windows / Linux)</span>
+                    </div>
+                    <p>
+                        The architecture relies on a thread-safe <code>queue.Queue</code> to pass asynchronous logging updates, error handshakes, and download telemetry smoothly from secondary network workers back to the main UI loop without freezing windows.
+                    </p>
+                </section>
+            </main>
+
+            <!-- Right Column: UI Preview & Quick Links -->
+            <aside>
+                <section id="ui-preview">
+                    <h2>Interface Preview</h2>
+                    <img src="image_4x-Ku7.png" alt="Spectra Launcher Interface" class="app-screenshot">
+                    <p style="font-size: 0.85rem; color: var(--text-muted); text-align: center; margin-top: 0.5rem;">
+                        Minimalist, actionable Prism-style panel framework.
+                    </p>
+                </section>
+
+                <section id="quick-setup">
+                    <h2>Microsoft Authentication Setup</h2>
+                    <div class="quick-setup-box">
+                        <h3>Prerequisites</h3>
+                        <p style="font-size: 0.9rem; margin-bottom: 0;">
+                            To use Microsoft login authentication via device-flows, ensure your Azure client app registration is active:
+                        </p>
+                        <ol style="font-size: 0.85rem; padding-left: 1.1rem; color: var(--text-muted);">
+                            <li>Register a public app client target within Microsoft Entra ID.</li>
+                            <li>Toggle account permissions to accept multi-tenant paths including personal accounts.</li>
+                            <li>Enable public client token flows (<code>Allow public client flows = Yes</code>).</li>
+                            <li>Paste the resulting App ID directly into the Accounts window pane.</li>
+                        </ol>
+                    </div>
+                </section>
+            </aside>
+
+        </div>
+
+        <footer class="footer">
+            <p>Spectra Launcher &copy; 2026. Built natively for streamlined performance.</p>
+        </footer>
+    </div>
+
+</body>
+</html>
