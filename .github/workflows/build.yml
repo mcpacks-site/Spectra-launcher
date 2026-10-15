@@ -43,13 +43,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --windowed --onefile --name SpectraLauncher fabric_launcher.py
+          pyinstaller --noconfirm --windowed --onefile --icon icon.ico --name SpectraLauncher fabric_launcher.py
           Compress-Archive -Path dist/SpectraLauncher.exe -DestinationPath ${{ matrix.asset }}
 
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: |
-          pyinstaller --noconfirm --windowed --name SpectraLauncher fabric_launcher.py
+          pyinstaller --noconfirm --windowed --icon icon.icns --name SpectraLauncher fabric_launcher.py
           cd dist && ditto -c -k --sequesterRsrc --keepParent SpectraLauncher.app ../${{ matrix.asset }}
 
       - name: Build (Linux)
