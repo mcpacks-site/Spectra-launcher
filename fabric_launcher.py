@@ -799,12 +799,17 @@ class AccountsDialog(tk.Toplevel):
             if not self.winfo_exists():
                 return
             url, code = dc["verification_uri"], dc["user_code"]
-            self.info.configure(text=f"Go to {url} and enter the code:  {code}\n"
-                                     "(The code was copied to your clipboard and the page was opened.)\n"
+            # Open the page with the code pre-filled (Microsoft accepts ?otc=CODE).
+            full = dc.get("verification_uri_complete")
+            if not full:
+                full = url + ("&" if "?" in url else "?") + "otc=" + urllib.parse.quote(code)
+            self.info.configure(text=f"A Microsoft page is opening with your code filled in:  {code}\n"
+                                     "If the box is empty, paste or type the code shown above\n"
+                                     f"(it was also copied to your clipboard; page: {url}).\n"
                                      "Waiting for you to finish signing in...")
             self.clipboard_clear()
             self.clipboard_append(code)
-            webbrowser.open(url)
+            webbrowser.open(full)
             self.app.bg(lambda: auth.minecraft_account(auth.poll_device(dc, self.cancel)),
                         self.signed_in, self.failed)
 
