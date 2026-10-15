@@ -49,7 +49,13 @@ jobs:
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: |
-          pyinstaller --noconfirm --windowed --icon icon.icns --name SpectraLauncher fabric_launcher.py
+          pyinstaller --noconfirm --windowed --icon icon.icns --osx-bundle-identifier com.spectralauncher.app --name SpectraLauncher fabric_launcher.py
+          # Let macOS ask for microphone access on behalf of the launcher (needed for Simple Voice Chat etc.)
+          PLIST=dist/SpectraLauncher.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string 'Spectra Launcher needs microphone access so mods like Simple Voice Chat can use your microphone.'" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'Spectra Launcher needs camera access for mods that use it.'" "$PLIST"
+          # Re-sign (ad-hoc) after editing the plist
+          codesign --force --deep --sign - dist/SpectraLauncher.app
           cd dist && ditto -c -k --sequesterRsrc --keepParent SpectraLauncher.app ../${{ matrix.asset }}
 
       - name: Build (Linux)
