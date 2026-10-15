@@ -5,8 +5,6 @@ Create separate instances, install mods and their dependencies with a click, and
 
 > Spectra Launcher is **not an official Minecraft product** and is **not approved by or associated with Mojang or Microsoft**. It is also not affiliated with the Fabric project.
 
-**Status:** Microsoft sign-in for this app is awaiting approval from Mojang. Until it is approved, signing in and launching the game may not work.
-
 Website: https://mcpacks-site.github.io/Spectra-launcher/
 
 ## Features
@@ -34,7 +32,7 @@ On some systems the command is `python3 fabric_launcher.py`.
 ## How to use
 
 1. Run the launcher.
-2. Click **Accounts**, then **Add Microsoft account**. A Microsoft page opens and the code is copied to your clipboard. Enter the code and sign in with the account that owns Minecraft.
+2. Click **Accounts**, then **Add Microsoft account**. A Microsoft page opens with your code already filled in (it is also copied to your clipboard in case the box is empty). Confirm it and sign in with the account that owns Minecraft.
 3. Click **Add instance**, choose a Minecraft version, and create it. Fabric API is installed automatically (you can turn this off).
 4. Select the instance and click **Launch** (or double-click it). The first launch downloads everything it needs, which can take a few minutes.
 5. Use **Edit / Mods** to change memory and Java settings, and to search for and install mods.
@@ -65,7 +63,7 @@ Sign-in uses Microsoft's standard device code flow with the scope `XboxLive.sign
 ## Troubleshooting
 
 - **"CERTIFICATE_VERIFY_FAILED" on macOS** - the launcher normally handles this itself. If it still happens, open the Python folder in Applications and double-click **Install Certificates.command**.
-- **"Minecraft login failed"** - the app is still waiting for Mojang's approval, or the account doesn't own Minecraft: Java Edition.
+- **"Minecraft login failed"** - the account you signed in with doesn't own Minecraft: Java Edition.
 - **A mod isn't listed** - it may not have a Fabric build for the Minecraft version of that instance.
 
 ## Contact
