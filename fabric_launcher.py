@@ -1758,7 +1758,7 @@ class AccountsPage(tk.Frame):
             c = Card(self.listf, height=120)
             c.pack(fill="x", pady=6)
             lbl(c.body, "No accounts yet", 13, "bold", bg=C["card"]).pack(anchor="w", pady=(8, 2))
-            lbl(c.body, "Click “Add Microsoft account” to sign in. A Microsoft page opens with your code filled in.",
+            lbl(c.body, "Click “Add Microsoft account” to sign in. A Microsoft page opens and the code is copied to your clipboard.",
                 10, color=C["muted"], bg=C["card"]).pack(anchor="w")
             return
         cur = app.current_account()
@@ -1830,16 +1830,12 @@ class AccountsPage(tk.Frame):
             if cancel.is_set() or not self.winfo_exists():
                 return
             url, code = dc["verification_uri"], dc["user_code"]
-            # Open the page with the code pre-filled (Microsoft accepts ?otc=CODE).
-            full = dc.get("verification_uri_complete")
-            if not full:
-                full = url + ("&" if "?" in url else "?") + "otc=" + urllib.parse.quote(code)
-            self.code, self.url = code, full
-            self.show_signin(code, "A Microsoft page is opening with this code already filled in. If the box is "
-                                   f"empty, type or paste the code at {url}. Waiting for you to finish signing in…")
+            self.code, self.url = code, url
+            self.show_signin(code, f"A Microsoft page is opening at {url}. Paste or type this code there "
+                                   "(it was copied to your clipboard), then sign in. Waiting for you to finish…")
             self.clipboard_clear()
             self.clipboard_append(code)
-            webbrowser.open(full)
+            webbrowser.open(url)
             self.app.bg(lambda: auth.minecraft_account(auth.poll_device(dc, cancel)),
                         self.signed_in, self.failed)
 
