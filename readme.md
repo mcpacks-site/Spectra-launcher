@@ -12,6 +12,7 @@ Website: https://mcpacks-site.github.io/Spectra-launcher/
 - **Instances** - keep separate installs, each with its own Minecraft version, mods, memory and Java settings
 - **Automatic setup** - downloads the game files, Fabric Loader, Fabric API and a matching Java runtime (Eclipse Temurin) if you don't have one
 - **Mod manager** - search Modrinth, install mods with their required dependencies, and enable, disable or remove them
+- **Custom cursors** - pick a pointer style for the launcher; optionally add the Cursors Extended mod to your instances for in-game pointers. On Windows the pointer can also be applied system-wide while the launcher is open.
 - **Your own account** - sign in with the Microsoft account that owns Minecraft: Java Edition. Only accounts that own the game can sign in and launch it. No license, authentication or safety checks are bypassed or disabled.
 
 ## Requirements
