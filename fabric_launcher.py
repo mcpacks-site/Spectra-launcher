@@ -681,6 +681,7 @@ class Core:
 # --------------------------------------------------------------------------
 # UI toolkit: theme, fonts and custom-drawn widgets (tkinter only, no extra packages)
 # --------------------------------------------------------------------------
+import atexit
 import colorsys
 import math
 import tkinter.font as tkfont
@@ -871,6 +872,10 @@ def draw_icon(cv, kind, cx, cy, size, color, tag="icon"):
     elif kind == "plus":
         cv.create_line(cx - s * 0.6, cy, cx + s * 0.6, cy, fill=color, width=2, capstyle="round", tags=tag)
         cv.create_line(cx, cy - s * 0.6, cx, cy + s * 0.6, fill=color, width=2, capstyle="round", tags=tag)
+    elif kind == "cursor":
+        cv.create_polygon(cx - s * 0.55, cy - s * 0.8, cx - s * 0.55, cy + s * 0.7, cx - s * 0.15, cy + s * 0.35,
+                          cx + s * 0.2, cy + s * 0.85, cx + s * 0.45, cy + s * 0.72, cx + s * 0.12, cy + s * 0.2,
+                          cx + s * 0.7, cy + s * 0.2, fill="", outline=color, width=2, joinstyle="round", tags=tag)
     elif kind == "play":
         cv.create_polygon(cx - s * 0.32, cy - s * 0.5, cx - s * 0.32, cy + s * 0.5, cx + s * 0.55, cy,
                           fill=color, outline=color, joinstyle="round", tags=tag)
@@ -1165,7 +1170,7 @@ class Dialog(tk.Toplevel):
         super().__init__(app.root)
         self.app = app
         self.title(title)
-        self.configure(bg=C["panel"])
+        self.configure(bg=C["panel"], cursor=getattr(app, "cursor_tk", ""))
         r = app.root
         x = r.winfo_rootx() + max(0, (r.winfo_width() - w) // 2)
         y = r.winfo_rooty() + max(0, (r.winfo_height() - h) // 3)
@@ -1856,6 +1861,314 @@ class AccountsPage(tk.Frame):
 
 
 # --------------------------------------------------------------------------
+# Cursor customisation
+#   launcher only        - Tk cursor on Spectra's own windows (all systems)
+#   launcher + Minecraft - also installs the "Cursors Extended" Fabric mod in your instances
+#   entire system        - Windows only: swaps the Windows arrow cursor while Spectra is open
+# --------------------------------------------------------------------------
+CURSOR_MOD_SLUG = "minecraft-cursor"      # Modrinth: "Cursors Extended" (client-side, MIT)
+ARROW_ART = (
+    "k...............", "kk..............", "kwk.............", "kwwk............",
+    "kwwwk...........", "kwwwwk..........", "kwwwwwk.........", "kwwwwwwk........",
+    "kwwwwwwwk.......", "kwwwwwkkkk......", "kwwkwwk.........", "kwk.kwwk........",
+    "kk..kwwk........", "k....kwwk.......", ".....kwwk.......", "......kk........",
+)
+
+
+def _dilate(shape, n=16):
+    out = set()
+    for (x, y) in shape:
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                p = (x + dx, y + dy)
+                if 0 <= p[0] < n and 0 <= p[1] < n and p not in shape:
+                    out.add(p)
+    return out
+
+
+def cursor_art(style):
+    """Returns (grid 16x16 of colour-or-None, hotspot) for a built-in cursor style."""
+    n = 16
+    grid = [[None] * n for _ in range(n)]
+    if style in ("default", "classic", "spectra"):
+        for y, row in enumerate(ARROW_ART):
+            for x, ch in enumerate(row):
+                if ch == "k":
+                    grid[y][x] = "#06140c" if style == "spectra" else "#000000"
+                elif ch == "w":
+                    grid[y][x] = mix(C["accent"], "#5b8cff", y / 15.0) if style == "spectra" else "#ffffff"
+        return grid, (0, 0)
+    shape = set()
+    if style == "crosshair":
+        for i in range(1, 15):
+            if not 6 <= i <= 9:
+                shape.add((i, 7))
+                shape.add((7, i))
+    elif style == "plus":
+        for i in range(2, 14):
+            for t in (7, 8):
+                shape.add((i, t))
+                shape.add((t, i))
+    elif style in ("ring", "target"):
+        for y in range(n):
+            for x in range(n):
+                d = math.hypot(x - 7.5, y - 7.5)
+                if 4.2 <= d <= 5.6 or d <= 1.0:
+                    shape.add((x, y))
+    for (x, y) in _dilate(shape):
+        grid[y][x] = "#000000"
+    for (x, y) in shape:
+        grid[y][x] = "#ffffff" if style != "ring" else C["accent"]
+    return grid, (8, 8)
+
+
+def make_cur(style):
+    """Build a Windows .cur file (32x32, 32-bit colour) from the built-in art."""
+    import struct
+    grid, (hx, hy) = cursor_art(style)
+    n, s = 16, 2
+    w = h = n * s
+    rows = []
+    for y in range(h):
+        row = bytearray()
+        for x in range(w):
+            c = grid[y // s][x // s]
+            if c is None:
+                row += b"\x00\x00\x00\x00"
+            else:
+                r, g, b = hex_rgb(c)
+                row += bytes((b, g, r, 255))
+        rows.append(bytes(row))
+    pixels = b"".join(reversed(rows))                    # BMP is bottom-up
+    mask = bytes(((w + 31) // 32) * 4 * h)
+    header = struct.pack("<IiiHHIIiiII", 40, w, h * 2, 1, 32, 0, len(pixels) + len(mask), 0, 0, 0, 0)
+    img = header + pixels + mask
+    entry = struct.pack("<BBBBHHII", w, h, 0, 0, hx * s, hy * s, len(img), 22)
+    return struct.pack("<HHH", 0, 2, 1) + entry + img
+
+
+# (id, label, description, tk cursor name, art style) per system
+if OS == "windows":
+    CURSOR_STYLES = [("default", "System default", "", "default"), ("spectra", "Spectra", "", "spectra"),
+                     ("classic", "Classic", "", "classic"), ("crosshair", "Crosshair", "", "crosshair"),
+                     ("ring", "Ring", "", "ring"), ("plus", "Plus", "", "plus")]
+elif OS == "osx":
+    CURSOR_STYLES = [("default", "System default", "arrow", "default"), ("crosshair", "Crosshair", "crosshair", "crosshair"),
+                     ("plus", "Plus", "plus", "plus")]
+else:
+    CURSOR_STYLES = [("default", "System default", "left_ptr", "default"), ("crosshair", "Crosshair", "crosshair", "crosshair"),
+                     ("plus", "Plus", "plus", "plus"), ("target", "Target", "target", "target")]
+CURSOR_SCOPES = [
+    ("launcher", "Launcher only", "Changes the pointer inside Spectra's windows. Nothing else is touched."),
+    ("minecraft", "Launcher + Minecraft", "Also adds the Cursors Extended mod to your instances so Minecraft gets "
+                                          "custom pointers too. Pick its look in game."),
+    ("system", "Entire system", "Windows only. Replaces your arrow pointer everywhere while Spectra is open and "
+                                "puts it back when you close it."),
+]
+
+
+def win_cursor_api():
+    import ctypes
+    u = ctypes.windll.user32
+    u.LoadImageW.restype = ctypes.c_void_p
+    u.LoadImageW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    u.SetSystemCursor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    u.SystemParametersInfoW.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint]
+    return u
+
+
+def win_set_system_cursor(path):
+    try:
+        u = win_cursor_api()
+        h = u.LoadImageW(None, str(path), 2, 0, 0, 0x10)           # IMAGE_CURSOR, LR_LOADFROMFILE
+        return bool(h) and bool(u.SetSystemCursor(h, 32512))       # OCR_NORMAL (the arrow)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def win_restore_cursors():
+    try:
+        win_cursor_api().SystemParametersInfoW(0x0057, 0, None, 0)  # SPI_SETCURSORS: reload the user's own
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def cursor_file(style):
+    d = ROOT / "cursors"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"{style}.cur"
+    p.write_bytes(make_cur(style))
+    return p
+
+
+def tk_cursor_for(style, probe):
+    """The value to give Tk's `cursor` option for this style ('' = default)."""
+    if style == "default":
+        return ""
+    if OS == "windows":
+        p = cursor_file(style)
+        cands = [p.as_posix()]
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(520)
+            if ctypes.windll.kernel32.GetShortPathNameW(str(p), buf, 520):
+                cands.insert(0, buf.value.replace("\\", "/"))
+        except Exception:  # noqa: BLE001
+            pass
+        for c in cands:
+            for form in ("@" + c, "@{" + c + "}"):
+                t = tk.Frame(probe)
+                try:
+                    t.config(cursor=form)
+                    return form
+                except tk.TclError:
+                    continue
+                finally:
+                    t.destroy()
+        return ""
+    for sid, _label, name, _art in CURSOR_STYLES:
+        if sid == style:
+            return name
+    return ""
+
+
+def sync_cursor_mod(inst, wanted, log):
+    """Install (or remove) the Cursors Extended mod in one instance."""
+    mods_dir = game_dir_of(inst) / "mods"
+    installed = inst.setdefault("mods", {})
+    pid = inst.get("cursor_mod_pid")
+    if wanted:
+        if not pid:
+            pid = get_json(f"{MODRINTH}/project/{CURSOR_MOD_SLUG}")["id"]
+        before = installed.get(pid)
+        install_project(inst["version"], pid, mods_dir, installed, log)
+        if installed.get(pid):
+            inst["cursor_mod_pid"] = pid
+            if not before:
+                log("Installed Cursors Extended. In game: Options > Controls > Mouse Settings > Cursor Settings.")
+        else:
+            log("The cursor mod is not available for this Minecraft version.")
+    elif pid and installed.get(pid):
+        fn = installed.pop(pid)
+        for suffix in ("", ".disabled"):
+            (mods_dir / (fn + suffix)).unlink(missing_ok=True)
+        inst.pop("cursor_mod_pid", None)
+        log("Removed the cursor mod (cursor scope is launcher only).")
+
+
+class CursorPage(tk.Frame):
+    PAD, GAP = 32, 14
+    GW, GH = 128, 120
+
+    def __init__(self, master, app):
+        super().__init__(master, bg=C["bg"])
+        self.app = app
+        app.header(self, "Cursor", "Choose how your pointer looks, and where it applies.")
+        self.cv = tk.Canvas(self, bg=C["bg"], highlightthickness=0, bd=0)
+        self.cv.pack(fill="both", expand=True)
+        self.hit, self.hover = [], None
+        self.cv.bind("<Configure>", lambda _e: self.draw())
+        self.cv.bind("<Motion>", self._motion)
+        self.cv.bind("<Leave>", lambda _e: self._hover(None))
+        self.cv.bind("<Button-1>", self._click)
+
+    def scope_ok(self, sid):
+        return sid != "system" or OS == "windows"
+
+    def draw(self):
+        cv, app = self.cv, self.app
+        cv.delete("all")
+        self.hit = []
+        w = max(cv.winfo_width(), 600)
+        P, G = self.PAD, self.GAP
+        scope, style = app.cursor_scope(), app.cfg.get("cursor_style", "default")
+        cv.create_text(P, 18, text="WHERE SHOULD IT APPLY?", anchor="w", fill=C["dim"], font=font(8, "bold"))
+        cw = (w - 2 * P - 2 * G) // 3
+        y = 36
+        for i, (sid, title, desc) in enumerate(CURSOR_SCOPES):
+            x = P + i * (cw + G)
+            ok, sel = self.scope_ok(sid), sid == scope
+            hov = ok and self.hover == ("scope", sid)
+            rrect(cv, x, y, x + cw, y + 124, 16, fill="#12201a" if sel else (C["card2"] if hov else C["card"]),
+                  outline=C["accent"] if sel else (C["line2"] if hov else C["line"]), width=2 if sel else 1)
+            cv.create_oval(x + 18, y + 20, x + 38, y + 40, outline=C["accent"] if sel else C["line2"], width=2,
+                           fill=C["accent"] if sel else "")
+            if sel:
+                cv.create_oval(x + 25, y + 27, x + 31, y + 33, fill=C["ink"], outline=C["ink"])
+            cv.create_text(x + 50, y + 30, text=title, anchor="w", font=font(11, "bold"),
+                           fill=C["text"] if ok else C["dim"])
+            cv.create_text(x + 18, y + 58, text=desc, anchor="nw", width=cw - 36, font=font(9),
+                           fill=C["muted"] if ok else C["dim"])
+            if not ok:
+                f = font(7, "bold")
+                pw = text_width("WINDOWS ONLY", f) + 18
+                rrect(cv, x + cw - pw - 14, y + 18, x + cw - 14, y + 38, 9, fill="#241d10", outline="#4a3a18")
+                cv.create_text(x + cw - 14 - pw / 2, y + 28, text="WINDOWS ONLY", fill=C["warn"], font=f)
+            else:
+                self.hit.append((x, y, x + cw, y + 124, "scope", sid))
+        y += 124 + 12
+        if scope in ("minecraft", "system"):
+            cv.create_text(P, y + 6, anchor="nw", width=w - 2 * P, font=font(9), fill=C["muted"],
+                           text="Minecraft: Spectra adds the “Cursors Extended” mod (from Modrinth) to your instances the "
+                                "next time you play. Choose its pointers in game under Options › Controls › "
+                                "Mouse Settings › Cursor Settings.")
+            y += 40
+        y += 14
+        cv.create_text(P, y, text="STYLE", anchor="w", fill=C["dim"], font=font(8, "bold"))
+        y += 20
+        cols = max(1, (w - 2 * P + G) // (self.GW + G))
+        for n, (sid, label, _name, art) in enumerate(CURSOR_STYLES):
+            r, c = divmod(n, cols)
+            x, yy = P + c * (self.GW + G), y + r * (self.GH + G)
+            sel, hov = sid == style, self.hover == ("style", sid)
+            rrect(cv, x, yy, x + self.GW, yy + self.GH, 16, fill="#12201a" if sel else (C["card2"] if hov else C["card"]),
+                  outline=C["accent"] if sel else (C["line2"] if hov else C["line"]), width=2 if sel else 1)
+            grid, _hot = cursor_art(art)
+            px, ox, oy = 4, x + self.GW / 2 - 32, yy + 18
+            for gy, row in enumerate(grid):
+                for gx, col in enumerate(row):
+                    if col:
+                        cv.create_rectangle(ox + gx * px, oy + gy * px, ox + (gx + 1) * px, oy + (gy + 1) * px,
+                                            fill=col, outline=col)
+            cv.create_text(x + self.GW / 2, yy + self.GH - 24, text=label, fill=C["text"] if sel else C["muted"],
+                           font=font(10, "bold" if sel else "normal"))
+            self.hit.append((x, yy, x + self.GW, yy + self.GH, "style", sid))
+        rows = -(-len(CURSOR_STYLES) // cols)
+        y += rows * (self.GH + G) + 4
+        note = {"windows": "Pointers apply to the whole launcher right away. Move your mouse around to try it.",
+                "osx": "On macOS the launcher can use your system's pointer shapes. Custom artwork pointers need "
+                       "Windows (macOS doesn't let apps change the system pointer). In Minecraft, the mod above "
+                       "gives you custom pointers on every system."}.get(
+            OS, "Pointers apply to the whole launcher right away. Custom artwork pointers need Windows; "
+                "the Minecraft mod works on every system.")
+        cv.create_text(P, y + 6, text=note, anchor="nw", width=w - 2 * P, font=font(9), fill=C["dim"])
+
+    def _at(self, e):
+        for x1, y1, x2, y2, kind, ident in self.hit:
+            if x1 <= e.x <= x2 and y1 <= e.y <= y2:
+                return (kind, ident)
+        return None
+
+    def _motion(self, e):
+        self._hover(self._at(e))
+
+    def _hover(self, h):
+        if h != self.hover:
+            self.hover = h
+            self.draw()
+
+    def _click(self, e):
+        h = self._at(e)
+        if not h:
+            return
+        if h[0] == "scope":
+            self.app.set_cursor(scope=h[1])
+        else:
+            self.app.set_cursor(style=h[1])
+        self.draw()
+
+
+# --------------------------------------------------------------------------
 # Main window
 # --------------------------------------------------------------------------
 WINDOW_TITLE = APP_NAME
@@ -1880,12 +2193,15 @@ class App:
         self.busy, self.phase = False, None
         self.sel_id = self.cfg.get("last_instance")
         self.page = "instances"
+        self.cursor_tk = ""
         self.build()
         self.log(f"{APP_NAME} {APP_VERSION}")
         self.log("Not an official Minecraft product; not affiliated with Mojang or Microsoft.")
         self.log(f"Data folder: {ROOT}")
         self.refresh_accounts()
         self.refresh_instances()
+        self.apply_cursor()
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.bg(lambda: [(v["version"], v["stable"]) for v in get_json(f"{FABRIC_META}/versions/game")],
                 self.set_versions, lambda e: self.log(f"Could not load version list: {e}"))
         root.after(100, self.poll)
@@ -1928,7 +2244,7 @@ class App:
         nav.pack(fill="x", padx=12, pady=(6, 0))
         self.nav = {}
         for key, text, icon in (("instances", "Instances", "grid"), ("accounts", "Accounts", "user"),
-                                ("console", "Console", "term"), ("about", "About", "info")):
+                                ("cursor", "Cursor", "cursor"), ("console", "Console", "term"), ("about", "About", "info")):
             n = NavItem(nav, text, icon, lambda k=key: self.show_page(k))
             n.pack(fill="x", pady=2)
             self.nav[key] = n
@@ -1952,6 +2268,7 @@ class App:
         self.pages = {}
         self.pages["instances"] = self.build_instances(holder)
         self.pages["accounts"] = AccountsPage(holder, self)
+        self.pages["cursor"] = CursorPage(holder, self)
         self.pages["console"] = self.build_console(holder)
         self.pages["about"] = self.build_about(holder)
         for p in self.pages.values():
@@ -2052,6 +2369,52 @@ class App:
             n._set(active=(k == name))
         if name == "console":
             self.logbox.see("end")
+        if name == "cursor":
+            self.pages["cursor"].draw()
+
+    # ---- cursor
+    def cursor_scope(self):
+        s = self.cfg.get("cursor_scope", "launcher")
+        return s if s in ("launcher", "minecraft") or (s == "system" and OS == "windows") else "launcher"
+
+    def set_cursor(self, scope=None, style=None):
+        if scope:
+            self.cfg["cursor_scope"] = scope
+        if style:
+            self.cfg["cursor_style"] = style
+        self.save_cfg()
+        self.apply_cursor()
+        if scope in ("minecraft", "system"):
+            self.toast("The cursor mod is added to your instances next time you play")
+
+    def apply_cursor(self):
+        style = self.cfg.get("cursor_style", "default")
+        if style not in {s[0] for s in CURSOR_STYLES}:
+            style = "default"
+        try:
+            self.cursor_tk = tk_cursor_for(style, self.root)
+        except Exception as e:  # noqa: BLE001
+            self.cursor_tk = ""
+            self.log(f"Could not load cursor: {e}")
+        self.root.config(cursor=self.cursor_tk)
+        for w in self.root.winfo_children():
+            if isinstance(w, tk.Toplevel):
+                w.config(cursor=self.cursor_tk)
+        if OS == "windows":
+            if self.cursor_scope() == "system" and style != "default":
+                self.cfg["cursor_system"] = win_set_system_cursor(cursor_file(style))
+                atexit.register(win_restore_cursors)
+            elif self.cfg.get("cursor_system"):
+                win_restore_cursors()
+                self.cfg["cursor_system"] = False
+            self.save_cfg()
+
+    def on_close(self):
+        if OS == "windows" and self.cfg.get("cursor_system"):
+            win_restore_cursors()
+            self.cfg["cursor_system"] = False
+            self.save_cfg()
+        self.root.destroy()
 
     # ---- small UI helpers
     def toast(self, text, kind="ok"):
@@ -2302,6 +2665,10 @@ class App:
         try:
             acct = self.fresh_account(acct)
             cmd, game_dir = Core(self.log, self.progress).prepare(inst, acct)
+            try:
+                sync_cursor_mod(inst, self.cursor_scope() in ("minecraft", "system"), self.log)
+            except Exception as e:  # noqa: BLE001
+                self.log(f"WARNING: could not update the cursor mod: {e}")
             save_instance(inst)
             self.log(f"Launching as {acct['username']}...")
             proc = subprocess.Popen(cmd, cwd=str(game_dir), stdout=subprocess.PIPE,
