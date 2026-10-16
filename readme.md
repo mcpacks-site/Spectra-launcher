@@ -32,7 +32,7 @@ On some systems the command is `python3 fabric_launcher.py`.
 ## How to use
 
 1. Run the launcher.
-2. Click **Accounts**, then **Add Microsoft account**. A Microsoft page opens with your code already filled in (it is also copied to your clipboard in case the box is empty). Confirm it and sign in with the account that owns Minecraft.
+2. Click **Accounts**, then **Add Microsoft account**. A Microsoft page opens and the code is copied to your clipboard. Paste it in and sign in with the account that owns Minecraft.
 3. Click **Add instance**, choose a Minecraft version, and create it. Fabric API is installed automatically (you can turn this off).
 4. Select the instance and click **Launch** (or double-click it). The first launch downloads everything it needs, which can take a few minutes.
 5. Use **Edit / Mods** to change memory and Java settings, and to search for and install mods.
