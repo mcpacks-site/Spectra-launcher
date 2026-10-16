@@ -48,7 +48,7 @@ from tkinter import messagebox, ttk
 # --------------------------------------------------------------------------
 APP_NAME = "Spectra Launcher"
 APP_SLUG = "SpectraLauncher"
-APP_VERSION = "2.0"
+APP_VERSION = "2.1"
 CLIENT_ID = "952311fd-b915-41d2-8183-9c3b425d7d3c"
 UA = f"{APP_SLUG}/{APP_VERSION} (open-source launcher)"
 MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
@@ -679,38 +679,615 @@ class Core:
 
 
 # --------------------------------------------------------------------------
-# Dialogs
+# UI toolkit: theme, fonts and custom-drawn widgets (tkinter only, no extra packages)
 # --------------------------------------------------------------------------
-def make_modal(win, parent):
-    win.transient(parent)
-    win.grab_set()
-    win.focus_set()
+import colorsys
+import math
+import tkinter.font as tkfont
+from tkinter import filedialog
+
+C = {
+    "bg": "#0b100d", "side": "#080c09", "panel": "#101611", "card": "#151d17", "card2": "#1b261f",
+    "line": "#243029", "line2": "#31423a", "text": "#ecf3ee", "muted": "#8f9f94", "dim": "#5f6f65",
+    "accent": "#46e08a", "accent2": "#2cc7b5", "ink": "#04130a", "danger": "#ff6b7a", "warn": "#ffc15a",
+}
+SPECTRUM = ["#ff5d73", "#ffa94d", "#f6e05e", "#46e08a", "#38d5e8", "#5b8cff", "#a66bff"]
 
 
-class AddInstanceDialog(tk.Toplevel):
-    def __init__(self, app):
+def hex_rgb(h):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def rgb_hex(c):
+    return "#%02x%02x%02x" % tuple(max(0, min(255, int(round(v)))) for v in c)
+
+
+def mix(a, b, t):
+    ca, cb = hex_rgb(a), hex_rgb(b)
+    return rgb_hex([ca[i] + (cb[i] - ca[i]) * t for i in range(3)])
+
+
+def spectrum_at(t):
+    t = max(0.0, min(1.0, t)) * (len(SPECTRUM) - 1)
+    i = min(int(t), len(SPECTRUM) - 2)
+    return mix(SPECTRUM[i], SPECTRUM[i + 1], t - i)
+
+
+_FONTS = {}
+
+
+def _pick(cands, fallback):
+    fams = set(tkfont.families())
+    return next((f for f in cands if f in fams), fallback)
+
+
+def font(size=10, weight="normal", mono=False):
+    if "ui" not in _FONTS:
+        _FONTS["ui"] = _pick(("Inter", "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue",
+                              "Ubuntu", "Cantarell", "Noto Sans", "DejaVu Sans"), "TkDefaultFont")
+        _FONTS["mono"] = _pick(("SF Mono", "Menlo", "Cascadia Mono", "Consolas", "JetBrains Mono",
+                                "DejaVu Sans Mono", "Liberation Mono"), "Courier")
+    k = 1.3 if OS == "osx" else 1.0
+    return (_FONTS["mono" if mono else "ui"], int(round(size * k)), weight)
+
+
+_MEASURE = {}
+
+
+def text_width(text, f):
+    if f not in _MEASURE:
+        _MEASURE[f] = tkfont.Font(font=f)
+    return _MEASURE[f].measure(text)
+
+
+def fit_text(text, f, maxw):
+    if text_width(text, f) <= maxw:
+        return text
+    while text and text_width(text + "…", f) > maxw:
+        text = text[:-1]
+    return text + "…"
+
+
+def rrect(cv, x1, y1, x2, y2, r, **kw):
+    r = max(0, min(r, (x2 - x1) / 2, (y2 - y1) / 2))
+    pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2, x2 - r, y2,
+           x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    return cv.create_polygon(pts, smooth=True, **kw)
+
+
+_IMGS = {}
+
+
+def grad_image(master, w, h, c1, c2, radius=0, corners="all", vertical=False, cache=True):
+    """A gradient PhotoImage with optionally rounded (transparent) corners."""
+    w, h = int(w), int(h)
+    key = (w, h, c1, c2, radius, corners, vertical)
+    if cache and key in _IMGS:
+        return _IMGS[key]
+    img = tk.PhotoImage(master=master, width=w, height=h)
+    if vertical:
+        rows = ["{" + " ".join([mix(c1, c2, y / max(1, h - 1))] * w) + "}" for y in range(h)]
+        img.put(" ".join(rows), to=(0, 0))
+    else:
+        row = "{" + " ".join(mix(c1, c2, x / max(1, w - 1)) for x in range(w)) + "}"
+        img.put(" ".join([row] * h), to=(0, 0))
+    if radius:
+        r = int(radius)
+        for dy in range(r):
+            for dx in range(r):
+                if (r - dx - 0.5) ** 2 + (r - dy - 0.5) ** 2 > r * r:
+                    top, bottom = corners in ("all", "top"), corners in ("all", "bottom")
+                    for (px, py, ok) in ((dx, dy, top), (w - 1 - dx, dy, top),
+                                         (dx, h - 1 - dy, bottom), (w - 1 - dx, h - 1 - dy, bottom)):
+                        if ok:
+                            img.transparency_set(px, py, True)
+    if cache:
+        _IMGS[key] = img
+    return img
+
+
+def _bg_of(w):
+    try:
+        return w.cget("bg")
+    except tk.TclError:
+        return C["bg"]
+
+
+def lbl(master, text="", size=10, weight="normal", color=None, mono=False, **kw):
+    kw.setdefault("bg", _bg_of(master))
+    return tk.Label(master, text=text, font=font(size, weight, mono), fg=color or C["text"], bd=0,
+                    highlightthickness=0, **kw)
+
+
+def entry(master, var, width=24, bg=None):
+    f = tk.Frame(master, bg=C["line"], padx=1, pady=1)
+    inner = tk.Frame(f, bg=bg or C["card2"])
+    inner.pack(fill="x")
+    inner.bind("<Button-1>", lambda _e: e.focus_set())
+    e = tk.Entry(inner, textvariable=var, bg=bg or C["card2"], fg=C["text"], insertbackground=C["accent"],
+                 relief="flat", bd=0, highlightthickness=0, font=font(10), width=width,
+                 selectbackground=C["accent2"], selectforeground=C["ink"])
+    e.pack(fill="x", padx=12, pady=9)
+    e.bind("<FocusIn>", lambda _e: f.configure(bg=C["accent"]))
+    e.bind("<FocusOut>", lambda _e: f.configure(bg=C["line"]))
+    f.entry = e
+    return f
+
+
+def setup_style(root):
+    s = ttk.Style(root)
+    s.theme_use("clam")
+    s.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+    s.configure("Treeview", background=C["card"], fieldbackground=C["card"], foreground=C["text"],
+                rowheight=34, borderwidth=0, relief="flat", font=font(10))
+    s.configure("Treeview.Heading", background=C["panel"], foreground=C["dim"], relief="flat",
+                borderwidth=0, font=font(8, "bold"), padding=(8, 8))
+    s.map("Treeview", background=[("selected", "#1d3a2a")], foreground=[("selected", C["text"])])
+    s.map("Treeview.Heading", background=[("active", C["panel"])])
+    s.layout("Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
+        ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
+    for o in ("Vertical", "Horizontal"):
+        s.configure(f"{o}.TScrollbar", background="#25322a", troughcolor=C["bg"], bordercolor=C["bg"],
+                    arrowcolor=C["bg"], lightcolor="#25322a", darkcolor="#25322a", relief="flat",
+                    gripcount=0, arrowsize=10)
+        s.map(f"{o}.TScrollbar", background=[("active", "#35473c")])
+    s.configure("TCombobox", fieldbackground=C["card2"], background=C["card2"], foreground=C["text"],
+                arrowcolor=C["muted"], bordercolor=C["line"], lightcolor=C["line"], darkcolor=C["line"],
+                padding=8, relief="flat")
+    s.map("TCombobox", fieldbackground=[("readonly", C["card2"])], foreground=[("readonly", C["text"])],
+          selectbackground=[("readonly", C["card2"])], selectforeground=[("readonly", C["text"])],
+          bordercolor=[("focus", C["accent"])])
+    root.option_add("*TCombobox*Listbox.background", C["card2"])
+    root.option_add("*TCombobox*Listbox.foreground", C["text"])
+    root.option_add("*TCombobox*Listbox.selectBackground", C["accent2"])
+    root.option_add("*TCombobox*Listbox.selectForeground", C["ink"])
+    root.option_add("*TCombobox*Listbox.font", font(10))
+    root.option_add("*TCombobox*Listbox.borderWidth", 0)
+
+
+# ---- icons / logo / avatar -------------------------------------------------
+def draw_icon(cv, kind, cx, cy, size, color, tag="icon"):
+    s = size / 2
+    if kind == "grid":
+        g = size * 0.1
+        for dx in (-1, 1):
+            for dy in (-1, 1):
+                x, y = cx + dx * (s * 0.5), cy + dy * (s * 0.5)
+                rrect(cv, x - s * 0.42, y - s * 0.42, x + s * 0.42, y + s * 0.42, 3, fill=color, outline="", tags=tag)
+    elif kind == "user":
+        cv.create_oval(cx - s * 0.38, cy - s * 0.85, cx + s * 0.38, cy - s * 0.09, outline=color, width=2, tags=tag)
+        cv.create_arc(cx - s * 0.8, cy + s * 0.1, cx + s * 0.8, cy + s * 1.7, start=0, extent=180,
+                      style="arc", outline=color, width=2, tags=tag)
+    elif kind == "term":
+        rrect(cv, cx - s * 0.9, cy - s * 0.75, cx + s * 0.9, cy + s * 0.75, 4, fill="", outline=color, width=2, tags=tag)
+        cv.create_line(cx - s * 0.5, cy - s * 0.25, cx - s * 0.1, cy, cx - s * 0.5, cy + s * 0.25,
+                       fill=color, width=2, tags=tag)
+        cv.create_line(cx + s * 0.05, cy + s * 0.3, cx + s * 0.5, cy + s * 0.3, fill=color, width=2, tags=tag)
+    elif kind == "info":
+        cv.create_oval(cx - s * 0.85, cy - s * 0.85, cx + s * 0.85, cy + s * 0.85, outline=color, width=2, tags=tag)
+        cv.create_line(cx, cy - s * 0.05, cx, cy + s * 0.42, fill=color, width=2, tags=tag)
+        cv.create_oval(cx - 1.5, cy - s * 0.42 - 1.5, cx + 1.5, cy - s * 0.42 + 1.5, fill=color, outline=color, tags=tag)
+    elif kind == "plus":
+        cv.create_line(cx - s * 0.6, cy, cx + s * 0.6, cy, fill=color, width=2, capstyle="round", tags=tag)
+        cv.create_line(cx, cy - s * 0.6, cx, cy + s * 0.6, fill=color, width=2, capstyle="round", tags=tag)
+    elif kind == "play":
+        cv.create_polygon(cx - s * 0.32, cy - s * 0.5, cx - s * 0.32, cy + s * 0.5, cx + s * 0.55, cy,
+                          fill=color, outline=color, joinstyle="round", tags=tag)
+
+
+def draw_logo(cv, x, y, size, tag="logo"):
+    """The Spectra prism mark, drawn from polygons."""
+    k = size / 100.0
+    A, B, Cc, G = (50, 8), (6, 88), (94, 88), (50, 62)
+
+    def P(*pts):
+        out = []
+        for px, py in pts:
+            out += [x + px * k, y + py * k]
+        return out
+    cv.create_polygon(P(A, B, G), fill="#4fe3c1", outline="", tags=tag)
+    cv.create_polygon(P(A, Cc, G), fill="#7a7bff", outline="", tags=tag)
+    cv.create_polygon(P(B, Cc, G), fill="#ff8fb0", outline="", tags=tag)
+    w = max(1, int(size / 22))
+    cv.create_polygon(P(A, B, Cc), fill="", outline="#f4fff8", width=w, joinstyle="round", tags=tag)
+    for pt in (G,):
+        for e in (A, B, Cc):
+            cv.create_line(P(pt, e), fill="#f4fff8", width=max(1, w - 1), tags=tag)
+
+
+def draw_avatar(cv, x, y, size, seed, tag="av"):
+    """A small generated pixel-art face (not a real skin) so every account looks distinct."""
+    h = hashlib.md5(seed.encode()).digest()
+    skin = ("#f1c7a4", "#e0a67a", "#c98b62", "#8d5a3c", "#f6d9c0")[h[0] % 5]
+    hair = ("#3b2417", "#1d1d1f", "#6b3f1d", "#caa14a", "#8a3d2f", "#3b4b8f")[h[1] % 6]
+    eye = ("#3b6cff", "#2a2a2a", "#2f9e5a")[h[2] % 3]
+    shirt = ("#2f9e8f", "#7a5cff", "#e0605b", "#3d8bff", "#e0a030")[h[3] % 5]
+    mouth = mix(skin, "#000000", 0.35)
+    grid = [[skin] * 8 for _ in range(8)]
+    for c in range(8):
+        grid[0][c] = hair
+        grid[1][c] = hair if (c in (0, 7) or h[4] % 2) else skin
+        grid[6][c] = shirt
+        grid[7][c] = shirt
+    grid[2][0] = grid[2][7] = hair
+    grid[3][1] = grid[3][6] = "#ffffff"
+    grid[3][2] = grid[3][5] = eye
+    grid[5][3] = grid[5][4] = mouth
+    p = size / 8.0
+    for r in range(8):
+        for c in range(8):
+            cv.create_rectangle(x + c * p, y + r * p, x + (c + 1) * p, y + (r + 1) * p,
+                                fill=grid[r][c], outline=grid[r][c], tags=tag)
+    cv.create_rectangle(x, y, x + size, y + size, outline=C["line2"], tags=tag)
+
+
+# ---- widgets -------------------------------------------------------------
+class Btn(tk.Canvas):
+    STYLES = {
+        "primary": dict(c1="#46e08a", c2="#2cc7b5", fg="#04130a"),
+        "secondary": dict(fill="#1c2820", bd="#2f4037", fg="#ecf3ee"),
+        "ghost": dict(fill=None, bd=None, fg="#8f9f94"),
+        "danger": dict(fill="#2a1519", bd="#51262d", fg="#ff7d8a"),
+    }
+
+    def __init__(self, master, text, command=None, style="secondary", w=None, h=38, size=10,
+                 weight="bold", r=10, bg=None, icon=None):
+        self.text, self.command, self.style, self.r, self.icon = text, command, style, r, icon
+        self.fnt = font(size, weight)
+        pad = 34 + (20 if icon else 0)
+        self.bw = int(w or text_width(text, self.fnt) + pad)
+        self.bh = int(h)
+        super().__init__(master, width=self.bw, height=self.bh, bg=bg or _bg_of(master),
+                         highlightthickness=0, bd=0, cursor="hand2")
+        self.hover = self.down = False
+        self.enabled = True
+        self.bind("<Enter>", lambda _e: self._set(hover=True))
+        self.bind("<Leave>", lambda _e: self._set(hover=False, down=False))
+        self.bind("<ButtonPress-1>", lambda _e: self._set(down=True))
+        self.bind("<ButtonRelease-1>", self._release)
+        self.draw()
+
+    def _set(self, **kw):
+        for k, v in kw.items():
+            setattr(self, k, v)
+        self.draw()
+
+    def _release(self, e):
+        was = self.down
+        self._set(down=False)
+        if was and self.enabled and 0 <= e.x <= self.bw and 0 <= e.y <= self.bh and self.command:
+            self.command()
+
+    def configure_text(self, text):
+        self.text = text
+        self.draw()
+
+    def set_enabled(self, on):
+        self.enabled = on
+        self.config(cursor="hand2" if on else "arrow")
+        self.draw()
+
+    def draw(self):
+        self.delete("all")
+        st = self.STYLES[self.style]
+        w, h, r = self.bw, self.bh, self.r
+        lift = 0.10 if (self.hover and self.enabled) else 0.0
+        off = 1 if (self.down and self.enabled) else 0
+        fg = st["fg"]
+        if self.style == "primary":
+            c1, c2 = st["c1"], st["c2"]
+            if not self.enabled:
+                c1, c2, fg = "#24332b", "#24332b", "#5f6f65"
+            else:
+                c1, c2 = mix(c1, "#ffffff", lift), mix(c2, "#ffffff", lift)
+            self.create_image(0, off, anchor="nw", image=grad_image(self, w, h - 1, c1, c2, r))
+        else:
+            fill, bd = st["fill"], st["bd"]
+            if self.style == "ghost":
+                fill = C["card2"] if self.hover else None
+                bd = None
+            elif self.hover and self.enabled:
+                fill, bd = mix(fill, "#ffffff", 0.07), mix(bd, "#ffffff", 0.15)
+            if not self.enabled:
+                fg = C["dim"]
+            if fill:
+                rrect(self, 1, 1 + off, w - 1, h - 1 + off, r, fill=fill, outline=bd or fill)
+        cx = w / 2 + (10 if self.icon else 0)
+        self.create_text(cx, h / 2 + off, text=self.text, fill=fg, font=self.fnt)
+        if self.icon:
+            tw = text_width(self.text, self.fnt)
+            draw_icon(self, self.icon, cx - tw / 2 - 14, h / 2 + off, 14, fg)
+
+
+class Switch(tk.Canvas):
+    def __init__(self, master, var, command=None, bg=None):
+        super().__init__(master, width=46, height=26, bg=bg or _bg_of(master), highlightthickness=0, bd=0,
+                         cursor="hand2")
+        self.var, self.command = var, command
+        self.bind("<Button-1>", self._toggle)
+        var.trace_add("write", lambda *_: self.draw())
+        self.draw()
+
+    def _toggle(self, _e):
+        self.var.set(not self.var.get())
+        if self.command:
+            self.command()
+
+    def draw(self):
+        self.delete("all")
+        on = bool(self.var.get())
+        if on:
+            self.create_image(1, 1, anchor="nw", image=grad_image(self, 44, 24, C["accent"], C["accent2"], 12))
+        else:
+            rrect(self, 1, 1, 45, 25, 12, fill="#26332b", outline="#34463b")
+        x = 33 if on else 13
+        self.create_oval(x - 9, 13 - 9, x + 9, 13 + 9, fill="#ffffff" if on else "#8f9f94", outline="")
+
+
+class Slider(tk.Canvas):
+    def __init__(self, master, var, lo, hi, step=0.5, width=320, bg=None):
+        super().__init__(master, width=width, height=30, bg=bg or _bg_of(master), highlightthickness=0, bd=0,
+                         cursor="hand2")
+        self.var, self.lo, self.hi, self.step, self.sw = var, lo, hi, step, width
+        self.bind("<Button-1>", self._drag)
+        self.bind("<B1-Motion>", self._drag)
+        var.trace_add("write", lambda *_: self.draw())
+        self.bind("<Configure>", lambda e: (setattr(self, "sw", e.width), self.draw()))
+        self.draw()
+
+    def _drag(self, e):
+        t = (e.x - 12) / max(1, self.sw - 24)
+        v = self.lo + max(0.0, min(1.0, t)) * (self.hi - self.lo)
+        self.var.set(round(round(v / self.step) * self.step, 2))
+
+    def draw(self):
+        self.delete("all")
+        try:
+            v = float(self.var.get())
+        except (tk.TclError, ValueError):
+            v = self.lo
+        t = max(0.0, min(1.0, (v - self.lo) / (self.hi - self.lo)))
+        x0, x1 = 12, self.sw - 12
+        xv = x0 + t * (x1 - x0)
+        rrect(self, x0 - 4, 11, x1 + 4, 19, 4, fill="#1d2a22", outline="#2b3b32")
+        if xv > x0:
+            self.create_image(x0 - 4, 11, anchor="nw",
+                              image=grad_image(self, int(xv - x0 + 4), 8, C["accent2"], C["accent"], 4))
+        self.create_oval(xv - 9, 15 - 9, xv + 9, 15 + 9, fill="#ffffff", outline=C["accent"], width=2)
+
+
+class Meter(tk.Canvas):
+    """Progress bar with a spectrum gradient; supports an indeterminate shimmer."""
+
+    def __init__(self, master, height=10, bg=None):
+        super().__init__(master, height=height, bg=bg or _bg_of(master), highlightthickness=0, bd=0)
+        self.bh, self.frac, self.indet, self._job, self._phase = height, 0.0, False, None, 0.0
+        self.bind("<Configure>", lambda _e: self.draw())
+
+    def set(self, frac):
+        self.frac, self.indet = max(0.0, min(1.0, frac)), False
+        self.draw()
+
+    def indeterminate(self, on=True):
+        self.indet = on
+        if on and not self._job:
+            self._tick()
+        self.draw()
+
+    def _tick(self):
+        if not self.indet:
+            self._job = None
+            return
+        self._phase = (self._phase + 0.018) % 1.4
+        self.draw()
+        self._job = self.after(30, self._tick)
+
+    def _fill(self, x0, x1, total):
+        step = 4
+        x = x0
+        while x < x1:
+            nx = min(x + step, x1)
+            col = spectrum_at(x / max(1, total))
+            self.create_rectangle(x, 1, nx + 1, self.bh - 1, fill=col, outline=col)
+            x = nx
+
+    def draw(self):
+        self.delete("all")
+        w, h = self.winfo_width(), self.bh
+        if w < 10:
+            return
+        rrect(self, 0, 0, w, h, h / 2, fill="#18221b", outline="#26352c")
+        if self.indet:
+            a = (self._phase - 0.4) * w
+            x0, x1 = max(4, a), min(w - 4, a + 0.4 * w)
+            if x1 > x0:
+                self._fill(int(x0), int(x1), w)
+        elif self.frac > 0:
+            x1 = max(h, self.frac * w)
+            self._fill(int(h / 2), int(x1 - h / 2), w)
+            c = spectrum_at(0)
+            self.create_oval(1, 1, h - 1, h - 1, fill=c, outline=c)
+            c2 = spectrum_at(x1 / w)
+            self.create_oval(x1 - h + 1, 1, x1 - 1, h - 1, fill=c2, outline=c2)
+
+
+class Card(tk.Canvas):
+    """A rounded panel. Put children in `.body`."""
+
+    def __init__(self, master, height, fill=None, outline=None, radius=16, pad=18, bg=None):
+        self.fill, self.outline, self.radius, self.pad = fill or C["card"], outline or C["line"], radius, pad
+        super().__init__(master, height=height, bg=bg or _bg_of(master), highlightthickness=0, bd=0)
+        self.body = tk.Frame(self, bg=self.fill)
+        self._win = self.create_window(pad, pad, anchor="nw", window=self.body)
+        self.bind("<Configure>", self._redraw)
+
+    def _redraw(self, e):
+        self.delete("bg")
+        rrect(self, 1, 1, e.width - 2, e.height - 2, self.radius, fill=self.fill, outline=self.outline, tags="bg")
+        self.tag_lower("bg")
+        self.itemconfigure(self._win, width=max(1, e.width - 2 * self.pad), height=max(1, e.height - 2 * self.pad))
+
+
+class NavItem(tk.Canvas):
+    def __init__(self, master, text, icon, command):
+        super().__init__(master, height=44, bg=C["side"], highlightthickness=0, bd=0, cursor="hand2")
+        self.text, self.icon, self.command = text, icon, command
+        self.active = self.hover = False
+        self.bind("<Configure>", lambda _e: self.draw())
+        self.bind("<Enter>", lambda _e: self._set(hover=True))
+        self.bind("<Leave>", lambda _e: self._set(hover=False))
+        self.bind("<Button-1>", lambda _e: self.command())
+
+    def _set(self, **kw):
+        for k, v in kw.items():
+            setattr(self, k, v)
+        self.draw()
+
+    def draw(self):
+        self.delete("all")
+        w = self.winfo_width()
+        if w < 20:
+            return
+        if self.active:
+            rrect(self, 2, 2, w - 2, 42, 10, fill="#14261b", outline="#1f3a2a")
+            rrect(self, 2, 12, 6, 32, 2, fill=C["accent"], outline=C["accent"])
+        elif self.hover:
+            rrect(self, 2, 2, w - 2, 42, 10, fill="#0f1611", outline="#0f1611")
+        col = C["accent"] if self.active else (C["text"] if self.hover else C["muted"])
+        draw_icon(self, self.icon, 28, 22, 18, col)
+        self.create_text(50, 22, text=self.text, anchor="w", fill=C["text"] if self.active else col,
+                         font=font(10, "bold" if self.active else "normal"))
+
+
+class Dialog(tk.Toplevel):
+    def __init__(self, app, title, w, h):
         super().__init__(app.root)
         self.app = app
-        self.title("Add instance")
-        self.geometry("380x230")
-        self.resizable(False, False)
-        make_modal(self, app.root)
-        f = ttk.Frame(self, padding=14)
-        f.pack(fill="both", expand=True)
-        f.columnconfigure(1, weight=1)
-        ttk.Label(f, text="Name").grid(row=0, column=0, sticky="w", pady=6)
+        self.title(title)
+        self.configure(bg=C["panel"])
+        r = app.root
+        x = r.winfo_rootx() + max(0, (r.winfo_width() - w) // 2)
+        y = r.winfo_rooty() + max(0, (r.winfo_height() - h) // 3)
+        self.geometry(f"{w}x{h}+{x}+{y}")
+        self.transient(r)
+        self.after(60, self._grab)
+
+    def _grab(self):
+        try:
+            self.grab_set()
+            self.focus_set()
+        except tk.TclError:
+            pass
+
+
+def field_label(master, text):
+    return lbl(master, text.upper(), 8, "bold", C["dim"])
+
+
+def hint(master, text, wrap=380):
+    return lbl(master, text, 9, color=C["muted"], wraplength=wrap, justify="left")
+
+
+def pill(master, text, fg, fill, bd=None):
+    f = font(8, "bold")
+    w = text_width(text, f) + 22
+    cv = tk.Canvas(master, width=w, height=24, bg=_bg_of(master), highlightthickness=0, bd=0)
+    rrect(cv, 1, 1, w - 1, 23, 11, fill=fill, outline=bd or fill)
+    cv.create_text(w / 2, 12, text=text, fill=fg, font=f)
+    return cv
+
+
+def switch_row(master, text, var, sub=None):
+    row = tk.Frame(master, bg=_bg_of(master))
+    left = tk.Frame(row, bg=_bg_of(master))
+    left.pack(side="left", fill="x", expand=True)
+    lbl(left, text, 10).pack(anchor="w")
+    if sub:
+        hint(left, sub, 330).pack(anchor="w")
+    Switch(row, var).pack(side="right")
+    return row
+
+
+class Tabs(tk.Canvas):
+    def __init__(self, master, names, command, bg=None):
+        super().__init__(master, height=44, bg=bg or _bg_of(master), highlightthickness=0, bd=0, cursor="hand2")
+        self.names, self.command, self.active, self.rects = names, command, 0, []
+        self.bind("<Configure>", lambda _e: self.draw())
+        self.bind("<Button-1>", self._click)
+
+    def _click(self, e):
+        for i, (x1, x2) in enumerate(self.rects):
+            if x1 <= e.x <= x2 and i != self.active:
+                self.active = i
+                self.draw()
+                self.command(i)
+
+    def draw(self):
+        self.delete("all")
+        f = font(10, "bold")
+        x, self.rects = 0, []
+        for i, n in enumerate(self.names):
+            w = text_width(n, f) + 36
+            on = i == self.active
+            self.create_text(x + w / 2, 20, text=n, fill=C["text"] if on else C["muted"], font=f)
+            if on:
+                self.create_rectangle(x + 10, 40, x + w - 10, 43, fill=C["accent"], outline=C["accent"])
+            self.rects.append((x, x + w))
+            x += w
+        self.create_line(0, 43, self.winfo_width(), 43, fill=C["line"])
+        self.tag_raise("all")
+
+
+def tree_box(master, columns, heads, widths, stretch_col, height=8):
+    box = tk.Frame(master, bg=C["line"], padx=1, pady=1)
+    inner = tk.Frame(box, bg=C["card"])
+    inner.pack(fill="both", expand=True)
+    tv = ttk.Treeview(inner, columns=columns, show="headings", height=height, selectmode="extended")
+    for c, t, w in zip(columns, heads, widths):
+        tv.heading(c, text=t, anchor="w")
+        tv.column(c, width=w, anchor="w", stretch=(c == stretch_col))
+    sb = ttk.Scrollbar(inner, orient="vertical", command=tv.yview)
+    tv.configure(yscrollcommand=sb.set)
+    tv.pack(side="left", fill="both", expand=True)
+    sb.pack(side="right", fill="y")
+    return box, tv
+
+
+# --------------------------------------------------------------------------
+# Dialogs
+# --------------------------------------------------------------------------
+class AddInstanceDialog(Dialog):
+    def __init__(self, app):
+        super().__init__(app, "New instance", 500, 560)
+        b = tk.Frame(self, bg=C["panel"])
+        b.pack(fill="both", expand=True, padx=32, pady=28)
+        lbl(b, "New instance", 20, "bold").pack(anchor="w")
+        hint(b, "Pick a Minecraft version. Fabric Loader, Fabric API and a matching Java are set up for you "
+                "the first time you play.", 430).pack(anchor="w", pady=(4, 20))
+        field_label(b, "Name").pack(anchor="w", pady=(0, 6))
         self.name = tk.StringVar(value="New instance")
-        ttk.Entry(f, textvariable=self.name).grid(row=0, column=1, columnspan=2, sticky="ew", pady=6)
-        ttk.Label(f, text="Minecraft").grid(row=1, column=0, sticky="w", pady=6)
+        e = entry(b, self.name)
+        e.pack(fill="x")
+        e.entry.focus_set()
+        e.entry.select_range(0, "end")
+        field_label(b, "Minecraft version").pack(anchor="w", pady=(18, 6))
         self.ver = tk.StringVar()
-        self.box = ttk.Combobox(f, textvariable=self.ver, state="readonly")
-        self.box.grid(row=1, column=1, sticky="ew", pady=6)
+        self.box = ttk.Combobox(b, textvariable=self.ver, state="readonly", font=font(10))
+        self.box.pack(fill="x")
         self.snap = tk.BooleanVar(value=False)
-        ttk.Checkbutton(f, text="Snapshots", variable=self.snap, command=self.refresh).grid(row=1, column=2, padx=6)
         self.api = tk.BooleanVar(value=True)
-        ttk.Checkbutton(f, text="Install Fabric API automatically", variable=self.api).grid(
-            row=2, column=0, columnspan=3, sticky="w", pady=6)
-        ttk.Button(f, text="Create", command=self.create).grid(row=3, column=0, columnspan=3, sticky="ew", ipady=4, pady=10)
+        sw = tk.Frame(b, bg=C["panel"])
+        sw.pack(fill="x", pady=(22, 0))
+        switch_row(sw, "Show snapshots", self.snap, "Include development snapshots in the list.").pack(fill="x", pady=6)
+        self.snap.trace_add("write", lambda *_: self.refresh())
+        switch_row(sw, "Install Fabric API", self.api, "Most Fabric mods need it. Kept up to date automatically.").pack(fill="x", pady=6)
+        btns = tk.Frame(b, bg=C["panel"])
+        btns.pack(side="bottom", fill="x")
+        Btn(btns, "Create instance", self.create, "primary", h=44, size=10).pack(side="right")
+        Btn(btns, "Cancel", self.destroy, "ghost", h=44).pack(side="right", padx=(0, 8))
+        self.bind("<Return>", lambda _e: self.create())
+        self.bind("<Escape>", lambda _e: self.destroy())
         self.refresh()
 
     def refresh(self):
@@ -722,211 +1299,162 @@ class AddInstanceDialog(tk.Toplevel):
     def create(self):
         name = self.name.get().strip()
         if not name or not self.ver.get():
-            messagebox.showwarning("Add instance", "Enter a name and pick a version.", parent=self)
+            messagebox.showwarning("New instance", "Enter a name and pick a version.", parent=self)
             return
         inst = {"id": new_instance_id(name), "name": name, "version": self.ver.get(),
                 "ram_gb": 4, "java": "", "jvm_args": "", "auto_fabric_api": self.api.get(), "mods": {}}
         save_instance(inst)
         game_dir_of(inst).mkdir(parents=True, exist_ok=True)
         self.app.refresh_instances(select=inst["id"])
+        self.app.toast(f"Created {name}")
         self.destroy()
 
 
-class AccountsDialog(tk.Toplevel):
-    def __init__(self, app):
-        super().__init__(app.root)
-        self.app = app
-        self.cancel = threading.Event()
-        self.title("Accounts")
-        self.geometry("520x380")
-        make_modal(self, app.root)
-        self.protocol("WM_DELETE_WINDOW", self.close)
-        f = ttk.Frame(self, padding=12)
-        f.pack(fill="both", expand=True)
-        f.columnconfigure(0, weight=1)
-
-        self.lb = tk.Listbox(f, height=8, exportselection=False)
-        self.lb.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
-        f.rowconfigure(0, weight=1)
-
-        row = ttk.Frame(f)
-        row.grid(row=1, column=0, sticky="ew")
-        ttk.Button(row, text="Add Microsoft account", command=self.add_ms).pack(side="left")
-        ttk.Button(row, text="Set default", command=self.set_default).pack(side="left", padx=6)
-        ttk.Button(row, text="Remove", command=self.remove).pack(side="left")
-
-        self.info = ttk.Label(f, text="Sign in with the Microsoft account that owns Minecraft: Java Edition.",
-                              wraplength=480, justify="left")
-        self.info.grid(row=2, column=0, sticky="w", pady=(10, 0))
-        self.reload()
-
-    def close(self):
-        self.cancel.set()
-        self.destroy()
-
-    def reload(self):
-        self.lb.delete(0, "end")
-        for a in self.app.accounts:
-            mark = "  ★" if acct_key(a) == self.app.cfg.get("account") else ""
-            self.lb.insert("end", acct_label(a) + mark)
-
-    def selected(self):
-        s = self.lb.curselection()
-        return self.app.accounts[s[0]] if s else None
-
-    def set_default(self):
-        a = self.selected()
-        if a:
-            self.app.cfg["account"] = acct_key(a)
-            self.app.save_cfg()
-            self.app.refresh_accounts()
-            self.reload()
-
-    def remove(self):
-        a = self.selected()
-        if a and messagebox.askyesno("Remove account", f"Remove {a['username']}?", parent=self):
-            self.app.accounts.remove(a)
-            self.app.save_accounts()
-            self.app.refresh_accounts()
-            self.reload()
-
-    def add_ms(self):
-        self.cancel.clear()
-        auth = MSAuth()
-        self.info.configure(text="Contacting Microsoft...")
-
-        def got_code(dc):
-            if not self.winfo_exists():
-                return
-            url, code = dc["verification_uri"], dc["user_code"]
-            # Open the page with the code pre-filled (Microsoft accepts ?otc=CODE).
-            full = dc.get("verification_uri_complete")
-            if not full:
-                full = url + ("&" if "?" in url else "?") + "otc=" + urllib.parse.quote(code)
-            self.info.configure(text=f"A Microsoft page is opening with your code filled in:  {code}\n"
-                                     "If the box is empty, paste or type the code shown above\n"
-                                     f"(it was also copied to your clipboard; page: {url}).\n"
-                                     "Waiting for you to finish signing in...")
-            self.clipboard_clear()
-            self.clipboard_append(code)
-            webbrowser.open(full)
-            self.app.bg(lambda: auth.minecraft_account(auth.poll_device(dc, self.cancel)),
-                        self.signed_in, self.failed)
-
-        self.app.bg(auth.start_device, got_code, self.failed)
-
-    def signed_in(self, acct):
-        self.app.add_account(acct)
-        if self.winfo_exists():
-            self.info.configure(text=f"Signed in as {acct['username']}.")
-            self.reload()
-
-    def failed(self, err):
-        if self.winfo_exists():
-            self.info.configure(text=f"Sign-in failed: {err}")
 
 
-class EditInstanceDialog(tk.Toplevel):
-    def __init__(self, app, inst):
-        super().__init__(app.root)
-        self.app, self.inst = app, inst
-        self.title(f"Edit instance - {inst['name']}")
-        self.geometry("760x560")
-        make_modal(self, app.root)
-        nb = ttk.Notebook(self)
-        nb.pack(fill="both", expand=True, padx=8, pady=8)
-        self.build_settings(nb)
-        self.build_mods(nb)
+class EditInstanceDialog(Dialog):
+    def __init__(self, app, inst, tab=0):
+        super().__init__(app, f"{inst['name']}", 1000, 680)
+        self.inst = inst
+        self.frames = []
+        top = tk.Frame(self, bg=C["panel"])
+        top.pack(fill="x", padx=32, pady=(26, 0))
+        self.title_lbl = lbl(top, inst["name"], 20, "bold")
+        self.title_lbl.pack(anchor="w")
+        lbl(top, f"Minecraft {inst['version']}  ·  Fabric", 10, color=C["muted"]).pack(anchor="w", pady=(2, 10))
+        self.tabs = Tabs(self, ["Settings", "Mods"], self.switch)
+        self.tabs.pack(fill="x", padx=32)
+        self.stage = tk.Frame(self, bg=C["panel"])
+        self.stage.pack(fill="both", expand=True, padx=32, pady=(18, 24))
+        self.frames = [self.build_settings(self.stage), self.build_mods(self.stage)]
+        self.tabs.active = tab
+        self.switch(tab)
+        self.bind("<Escape>", lambda _e: self.destroy())
+
+    def switch(self, i):
+        for f in self.frames:
+            f.pack_forget()
+        self.frames[i].pack(fill="both", expand=True)
 
     # ---- settings tab
-    def build_settings(self, nb):
-        f = ttk.Frame(nb, padding=14)
-        nb.add(f, text="Settings")
-        f.columnconfigure(1, weight=1)
+    def build_settings(self, parent):
+        f = tk.Frame(parent, bg=C["panel"])
         i = self.inst
         self.v_name = tk.StringVar(value=i["name"])
-        self.v_ram = tk.DoubleVar(value=i.get("ram_gb", 4))
+        self.v_ram = tk.DoubleVar(value=float(i.get("ram_gb", 4)))
         self.v_java = tk.StringVar(value=i.get("java", ""))
         self.v_args = tk.StringVar(value=i.get("jvm_args", ""))
         self.v_api = tk.BooleanVar(value=i.get("auto_fabric_api", True))
-        rows = [("Name", ttk.Entry(f, textvariable=self.v_name)),
-                ("Memory (GB)", ttk.Spinbox(f, from_=1, to=64, increment=0.5, textvariable=self.v_ram, width=8)),
-                ("Java path (optional)", ttk.Entry(f, textvariable=self.v_java)),
-                ("Extra JVM args", ttk.Entry(f, textvariable=self.v_args))]
-        for r, (label, w) in enumerate(rows):
-            ttk.Label(f, text=label).grid(row=r, column=0, sticky="w", pady=6)
-            w.grid(row=r, column=1, sticky="ew" if not isinstance(w, ttk.Spinbox) else "w", pady=6)
-        ttk.Label(f, text=f"Minecraft {i['version']}  |  Fabric").grid(row=4, column=0, columnspan=2, sticky="w", pady=6)
-        ttk.Checkbutton(f, text="Keep Fabric API installed and up to date",
-                        variable=self.v_api).grid(row=5, column=0, columnspan=2, sticky="w", pady=6)
-        ttk.Button(f, text="Save", command=self.save).grid(row=6, column=0, columnspan=2, sticky="ew", ipady=4, pady=12)
+        col = tk.Frame(f, bg=C["panel"])
+        col.pack(anchor="nw", fill="x", ipadx=0)
+        col.grid_columnconfigure(0, weight=1)
+        field_label(col, "Name").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        entry(col, self.v_name).grid(row=1, column=0, sticky="ew")
+
+        field_label(col, "Memory").grid(row=2, column=0, sticky="w", pady=(20, 4))
+        mem = tk.Frame(col, bg=C["panel"])
+        mem.grid(row=3, column=0, sticky="ew")
+        self.mem_lbl = lbl(mem, "", 12, "bold", C["accent"], width=9, anchor="e")
+        self.mem_lbl.pack(side="right")
+        Slider(mem, self.v_ram, 1, 32, 0.5).pack(side="left", fill="x", expand=True)
+        self.v_ram.trace_add("write", lambda *_: self.mem_lbl.config(text=f"{self._ram():g} GB"))
+        self.mem_lbl.config(text=f"{self._ram():g} GB")
+
+        field_label(col, "Java path (optional)").grid(row=4, column=0, sticky="w", pady=(18, 6))
+        jr = tk.Frame(col, bg=C["panel"])
+        jr.grid(row=5, column=0, sticky="ew")
+        Btn(jr, "Browse", self.browse, "secondary", h=38).pack(side="right", padx=(8, 0))
+        entry(jr, self.v_java).pack(side="left", fill="x", expand=True)
+        hint(col, "Leave empty and Spectra downloads a matching Java for you.", 600).grid(row=6, column=0, sticky="w", pady=(6, 0))
+
+        field_label(col, "Extra JVM arguments").grid(row=7, column=0, sticky="w", pady=(18, 6))
+        entry(col, self.v_args).grid(row=8, column=0, sticky="ew")
+
+        sw = switch_row(col, "Keep Fabric API installed and up to date", self.v_api)
+        sw.grid(row=9, column=0, sticky="ew", pady=(22, 0))
+        Btn(f, "Save changes", self.save, "primary", h=44).pack(side="bottom", anchor="e")
+        return f
+
+    def _ram(self):
+        try:
+            return float(self.v_ram.get())
+        except (tk.TclError, ValueError):
+            return 4.0
+
+    def browse(self):
+        p = filedialog.askopenfilename(parent=self, title="Select the java executable")
+        if p:
+            self.v_java.set(p)
 
     def save(self):
-        try:
-            ram = float(self.v_ram.get())
-        except (tk.TclError, ValueError):
-            messagebox.showwarning("Settings", "Memory must be a number.", parent=self)
-            return
-        self.inst.update(name=self.v_name.get().strip() or self.inst["name"], ram_gb=ram,
+        self.inst.update(name=self.v_name.get().strip() or self.inst["name"], ram_gb=self._ram(),
                          java=self.v_java.get().strip(), jvm_args=self.v_args.get().strip(),
                          auto_fabric_api=self.v_api.get())
         save_instance(self.inst)
         self.app.refresh_instances(select=self.inst["id"])
-        self.title(f"Edit instance - {self.inst['name']}")
+        self.title_lbl.config(text=self.inst["name"])
+        self.app.toast("Instance saved")
 
     # ---- mods tab
     @property
     def mods_dir(self):
         return game_dir_of(self.inst) / "mods"
 
-    def build_mods(self, nb):
-        f = ttk.Frame(nb, padding=10)
-        nb.add(f, text="Mods")
-        f.columnconfigure(0, weight=1)
-        f.rowconfigure(1, weight=1)
-        f.rowconfigure(5, weight=1)
+    def build_mods(self, parent):
+        f = tk.Frame(parent, bg=C["panel"])
+        f.grid_columnconfigure(0, weight=1, uniform="c")
+        f.grid_columnconfigure(1, weight=1, uniform="c")
+        f.grid_rowconfigure(1, weight=1)
 
-        ttk.Label(f, text="Installed").grid(row=0, column=0, sticky="w")
-        self.inst_tree = ttk.Treeview(f, columns=("file", "state"), show="headings", height=7)
-        self.inst_tree.heading("file", text="File")
-        self.inst_tree.heading("state", text="State")
-        self.inst_tree.column("state", width=90, stretch=False)
-        self.inst_tree.grid(row=1, column=0, sticky="nsew")
-        bar = ttk.Frame(f)
-        bar.grid(row=2, column=0, sticky="w", pady=6)
-        ttk.Button(bar, text="Enable / disable", command=self.toggle).pack(side="left")
-        ttk.Button(bar, text="Remove", command=self.remove).pack(side="left", padx=6)
-        ttk.Button(bar, text="Open mods folder", command=lambda: open_path(self.mods_dir)).pack(side="left")
+        # left: installed
+        lh = tk.Frame(f, bg=C["panel"])
+        lh.grid(row=0, column=0, sticky="ew", padx=(0, 12), pady=(0, 8))
+        field_label(lh, "Installed").pack(side="left")
+        self.count_lbl = lbl(lh, "", 9, color=C["dim"])
+        self.count_lbl.pack(side="right")
+        lb, self.inst_tree = tree_box(f, ("file", "state"), ("MOD FILE", "STATE"), (260, 70), "file")
+        lb.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
+        self.inst_tree.tag_configure("off", foreground=C["dim"])
+        bar = tk.Frame(f, bg=C["panel"])
+        bar.grid(row=2, column=0, sticky="w", pady=(10, 0))
+        Btn(bar, "Enable / disable", self.toggle, h=36).pack(side="left")
+        Btn(bar, "Remove", self.remove, "danger", h=36).pack(side="left", padx=8)
+        Btn(bar, "Folder", lambda: open_path(self.mods_dir), "ghost", h=36).pack(side="left")
 
-        sr = ttk.Frame(f)
-        sr.grid(row=3, column=0, sticky="ew", pady=(8, 4))
-        sr.columnconfigure(1, weight=1)
-        ttk.Label(sr, text="Search Modrinth").grid(row=0, column=0)
+        # right: modrinth
+        rh = tk.Frame(f, bg=C["panel"])
+        rh.grid(row=0, column=1, sticky="ew", padx=(12, 0), pady=(0, 8))
+        field_label(rh, "Browse Modrinth").pack(side="left")
+        rb, self.res = tree_box(f, ("title", "dl", "desc"), ("MOD", "DOWNLOADS", "DESCRIPTION"),
+                                (150, 90, 220), "desc")
+        rb.grid(row=1, column=1, sticky="nsew", padx=(12, 0))
+        sbar = tk.Frame(f, bg=C["panel"])
+        sbar.grid(row=2, column=1, sticky="ew", padx=(12, 0), pady=(10, 0))
         self.q = tk.StringVar()
-        e = ttk.Entry(sr, textvariable=self.q)
-        e.grid(row=0, column=1, sticky="ew", padx=6)
-        e.bind("<Return>", lambda _e: self.search())
-        ttk.Button(sr, text="Search", command=self.search).grid(row=0, column=2)
-
-        self.res = ttk.Treeview(f, columns=("title", "dl", "desc"), show="headings", height=7)
-        for c, t, w in (("title", "Mod", 160), ("dl", "Downloads", 90), ("desc", "Description", 380)):
-            self.res.heading(c, text=t)
-            self.res.column(c, width=w, stretch=(c == "desc"))
-        self.res.grid(row=5, column=0, sticky="nsew")
-        ttk.Button(f, text="Install selected (with required dependencies)",
-                   command=self.install).grid(row=6, column=0, sticky="ew", ipady=3, pady=6)
-        self.msg = ttk.Label(f, text="")
-        self.msg.grid(row=7, column=0, sticky="w")
+        Btn(sbar, "Search", self.search, "secondary", h=38).pack(side="right", padx=(8, 0))
+        e = entry(sbar, self.q)
+        e.pack(side="left", fill="x", expand=True)
+        e.entry.bind("<Return>", lambda _e: self.search())
+        foot = tk.Frame(f, bg=C["panel"])
+        foot.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        self.msg = lbl(foot, f"Search mods that support Minecraft {self.inst['version']}.", 9, color=C["muted"])
+        self.msg.pack(side="left")
+        Btn(foot, "Install selected + dependencies", self.install, "primary", h=42).pack(side="right")
         self.reload_mods()
+        return f
 
     def reload_mods(self):
         self.inst_tree.delete(*self.inst_tree.get_children())
+        n = 0
         if self.mods_dir.exists():
             for p in sorted(self.mods_dir.iterdir()):
                 if p.name.endswith(".jar"):
-                    self.inst_tree.insert("", "end", iid=p.name, values=(p.name, "enabled"))
+                    self.inst_tree.insert("", "end", iid=p.name, values=(p.name, "On"))
+                    n += 1
                 elif p.name.endswith(".jar.disabled"):
-                    self.inst_tree.insert("", "end", iid=p.name, values=(p.name[:-9], "disabled"))
+                    self.inst_tree.insert("", "end", iid=p.name, values=(p.name[:-9], "Off"), tags=("off",))
+                    n += 1
+        self.count_lbl.config(text=f"{n} file{'s' if n != 1 else ''}")
 
     def toggle(self):
         for iid in self.inst_tree.selection():
@@ -950,7 +1478,7 @@ class EditInstanceDialog(tk.Toplevel):
             return
         facets = json.dumps([["project_type:mod"], ["categories:fabric"], [f"versions:{self.inst['version']}"]])
         url = f"{MODRINTH}/search?" + urllib.parse.urlencode({"query": query, "facets": facets, "limit": 25})
-        self.msg.configure(text="Searching...")
+        self.msg.config(text="Searching…")
 
         def done(data):
             if not self.winfo_exists():
@@ -959,16 +1487,18 @@ class EditInstanceDialog(tk.Toplevel):
             for h in data.get("hits", []):
                 self.res.insert("", "end", iid=h["project_id"],
                                 values=(h["title"], f"{h['downloads']:,}", h["description"]))
-            self.msg.configure(text=f"{len(data.get('hits', []))} result(s) for Minecraft {self.inst['version']}.")
+            self.msg.config(text=f"{len(data.get('hits', []))} result(s) for Minecraft {self.inst['version']}.")
 
-        self.app.bg(lambda: get_json(url), done, lambda e: self.msg.configure(text=f"Search failed: {e}"))
+        self.app.bg(lambda: get_json(url), done,
+                    lambda e: self.winfo_exists() and self.msg.config(text=f"Search failed: {e}"))
 
     def install(self):
         sel = self.res.selection()
         if not sel:
+            self.msg.config(text="Select one or more mods from the results first.")
             return
         mc, installed = self.inst["version"], self.inst.setdefault("mods", {})
-        self.msg.configure(text="Installing...")
+        self.msg.config(text="Installing…")
 
         def work():
             seen, logs = set(), []
@@ -980,75 +1510,596 @@ class EditInstanceDialog(tk.Toplevel):
             save_instance(self.inst)
             if self.winfo_exists():
                 self.reload_mods()
-                self.msg.configure(text=logs[-1] if logs else "Done.")
+                self.msg.config(text=logs[-1] if logs else "Done.")
             for l in logs:
                 self.app.log(l)
+            self.app.refresh_instances()
 
-        self.app.bg(work, done, lambda e: self.msg.configure(text=f"Install failed: {e}"))
+        self.app.bg(work, done, lambda e: self.winfo_exists() and self.msg.config(text=f"Install failed: {e}"))
+
+
+# --------------------------------------------------------------------------
+# Instance grid (cards drawn on a canvas)
+# --------------------------------------------------------------------------
+def inst_colors(seed):
+    h = int(hashlib.md5(seed.encode()).hexdigest()[:6], 16)
+    hue = (h % 360) / 360.0
+    a = colorsys.hsv_to_rgb(hue, 0.62, 0.86)
+    b = colorsys.hsv_to_rgb((hue + 0.14) % 1.0, 0.78, 0.40)
+    return rgb_hex([v * 255 for v in a]), rgb_hex([v * 255 for v in b])
+
+
+class InstanceGrid(tk.Frame):
+    CW, CH, GAP, PAD, BH = 256, 184, 20, 32, 92
+
+    def __init__(self, master, app):
+        super().__init__(master, bg=C["bg"])
+        self.app = app
+        self.cv = tk.Canvas(self, bg=C["bg"], highlightthickness=0, bd=0)
+        self.sb = ttk.Scrollbar(self.cv, orient="vertical", command=self.cv.yview)
+        self.cv.configure(yscrollcommand=self._sb_set)
+        self.cv.pack(fill="both", expand=True)
+        self.hit, self.hover, self._job = [], None, None
+        self.cw, self._imgs, self._cache = self.CW, [], {}
+        self.cv.bind("<Configure>", lambda _e: self.schedule())
+        self.cv.bind("<Motion>", self._motion)
+        self.cv.bind("<Button-1>", self._click)
+        self.cv.bind("<Double-Button-1>", self._double)
+        for seq in ("<Button-3>", "<Button-2>", "<Control-Button-1>"):
+            self.cv.bind(seq, self._context)
+        self.cv.bind("<Enter>", lambda _e: self._wheel(True))
+        self.cv.bind("<Leave>", lambda _e: (self._set_hover(None), self._wheel(False)), add="+")
+
+    # ---- scrolling
+    def _sb_set(self, lo, hi):
+        self.sb.set(lo, hi)
+        if float(lo) <= 0.0 and float(hi) >= 1.0:
+            self.sb.place_forget()
+        else:
+            self.sb.place(relx=1.0, rely=0, relheight=1.0, anchor="ne", width=10)
+
+    def banner(self, w, h, c1, c2):
+        key = (w, h, c1, c2)
+        if key not in self._cache:
+            self._cache[key] = grad_image(self.cv, w, h, c1, c2, 16, corners="top", cache=False)
+        return self._cache[key]
+
+    def _wheel(self, on):
+        if on:
+            self.cv.bind_all("<MouseWheel>", self._on_wheel)
+            self.cv.bind_all("<Button-4>", lambda _e: self.cv.yview_scroll(-2, "units"))
+            self.cv.bind_all("<Button-5>", lambda _e: self.cv.yview_scroll(2, "units"))
+        else:
+            for s in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                self.cv.unbind_all(s)
+
+    def _on_wheel(self, e):
+        d = -1 if e.delta > 0 else 1
+        if OS == "windows":
+            d = int(-e.delta / 120) or d
+        self.cv.yview_scroll(d * 2, "units")
+
+    # ---- drawing
+    def schedule(self):
+        if self._job:
+            self.after_cancel(self._job)
+        self._job = self.after(30, self.draw)
+
+    def draw(self):
+        self._job = None
+        cv = self.cv
+        cv.delete("all")
+        if len(self._cache) > 150:
+            self._cache.clear()
+        self.hit = []
+        w = max(cv.winfo_width(), 400)
+        insts = self.app.instances
+        if not insts:
+            self._draw_empty(w)
+            cv.configure(scrollregion=(0, 0, w, cv.winfo_height()))
+            return
+        cols = max(1, (w - 2 * self.PAD + self.GAP) // (self.CW + self.GAP))
+        self.cw = min(340, (w - 2 * self.PAD - (cols - 1) * self.GAP) // cols)
+        items = insts + [None]
+        top = 14
+        for n, inst in enumerate(items):
+            r, c = divmod(n, cols)
+            x, y = self.PAD + c * (self.cw + self.GAP), top + r * (self.CH + self.GAP)
+            if inst is None:
+                self._draw_new(x, y)
+            else:
+                self._draw_card(inst, x, y)
+        rows = -(-len(items) // cols)
+        cv.configure(scrollregion=(0, 0, w, max(top + rows * (self.CH + self.GAP) + self.PAD, cv.winfo_height())))
+
+    def _draw_empty(self, w):
+        cv = self.cv
+        cx, cy = w / 2, max(180, cv.winfo_height() / 2 - 30)
+        cv.create_oval(cx - 150, cy - 150, cx + 150, cy + 150, fill="#0e1510", outline="#121b14")
+        draw_logo(cv, cx - 44, cy - 124, 88)
+        cv.create_text(cx, cy - 12, text="Welcome to Spectra", fill=C["text"], font=font(20, "bold"))
+        cv.create_text(cx, cy + 34, text="Create an instance and pick a Minecraft version.\n"
+                       "Fabric, Fabric API and Java are set up automatically.",
+                       fill=C["muted"], font=font(10), justify="center")
+        b = Btn(cv, "New instance", self.app.add_instance, "primary", h=46, bg=C["bg"], icon="plus")
+        cv.create_window(cx, cy + 100, window=b)
+
+    def _draw_new(self, x, y):
+        cv, w, h = self.cv, self.cw, self.CH
+        hov = self.hover == ("new", None)
+        rrect(cv, x, y, x + w, y + h, 18, fill="#0e1510" if not hov else "#122019",
+              outline=C["accent"] if hov else C["line2"], dash=(5, 5), width=2)
+        cx, cy = x + w / 2, y + h / 2 - 12
+        cv.create_oval(cx - 24, cy - 24, cx + 24, cy + 24, fill=C["card2"], outline=C["accent"] if hov else C["line2"])
+        draw_icon(cv, "plus", cx, cy, 22, C["accent"] if hov else C["muted"])
+        cv.create_text(cx, cy + 46, text="New instance", fill=C["text"] if hov else C["muted"], font=font(10, "bold"))
+        self.hit.append((x, y, x + w, y + h, "new", None))
+
+    def _draw_card(self, inst, x, y):
+        cv, w, h, bh = self.cv, self.cw, self.CH, self.BH
+        iid = inst["id"]
+        sel = iid == self.app.sel_id
+        hov = self.hover and self.hover[1] == iid
+        c1, c2 = inst_colors(inst["id"])
+        rrect(cv, x + 2, y + 6, x + w + 2, y + h + 6, 18, fill="#070a08", outline="")
+        rrect(cv, x, y, x + w, y + h, 18, fill=C["card2"] if hov else C["card"],
+              outline=C["accent"] if sel else ("#3a4d42" if hov else C["line"]), width=2 if sel else 1)
+        cv.create_image(x + 2, y + 2, anchor="nw", image=self.banner(w - 4, bh, c1, c2))
+        # faceted decoration in the banner
+        lite = mix(c1, "#ffffff", 0.16)
+        cv.create_polygon(x + w - 150, y + bh + 1, x + w - 84, y + 14, x + w - 18, y + bh + 1,
+                          fill=mix(c2, "#ffffff", 0.10), outline="")
+        cv.create_polygon(x + w - 110, y + bh + 1, x + w - 84, y + 14, x + w - 52, y + bh + 1,
+                          fill=lite, outline="")
+        cv.create_text(x + 18, y + 22, text=inst["version"], anchor="w", fill="#ffffff", font=font(18, "bold"))
+        fw = text_width("FABRIC", font(7, "bold")) + 16
+        rrect(cv, x + 18, y + 46, x + 18 + fw, y + 64, 8, fill=mix(c2, "#000000", 0.35), outline="")
+        cv.create_text(x + 18 + fw / 2, y + 55, text="FABRIC", fill="#e9fff3", font=font(7, "bold"))
+        nm = fit_text(inst["name"], font(12, "bold"), w - 36 - 50)
+        cv.create_text(x + 18, y + bh + 26, text=nm, anchor="w", fill=C["text"], font=font(12, "bold"))
+        mods = len(inst.get("mods", {}))
+        meta = f"{mods} mod{'s' if mods != 1 else ''}  ·  {inst.get('ram_gb', 4):g} GB"
+        cv.create_text(x + 18, y + bh + 50, text=meta, anchor="w", fill=C["muted"], font=font(9))
+        # hover actions
+        if hov or sel:
+            px, py = x + w - 38, y + bh + 4 + (h - bh) / 2 - 6
+            busy = self.app.busy
+            pc = C["dim"] if busy else (mix(C["accent"], "#ffffff", 0.2) if self.hover == ("play", iid) else C["accent"])
+            cv.create_oval(px - 19, py - 19, px + 19, py + 19, fill=pc, outline="")
+            draw_icon(cv, "play", px + 1, py, 20, C["ink"])
+            self.hit.insert(0, (px - 19, py - 19, px + 19, py + 19, "play", iid))
+            mx, my = x + w - 24, y + 24
+            cv.create_oval(mx - 14, my - 14, mx + 14, my + 14,
+                           fill=mix(c2, "#000000", 0.35 if self.hover != ("menu", iid) else 0.15), outline="")
+            for dx in (-6, 0, 6):
+                cv.create_oval(mx + dx - 1.8, my - 1.8, mx + dx + 1.8, my + 1.8, fill="#ffffff", outline="")
+            self.hit.insert(0, (mx - 14, my - 14, mx + 14, my + 14, "menu", iid))
+        self.hit.append((x, y, x + w, y + h, "card", iid))
+
+    # ---- interaction
+    def _at(self, e):
+        x, y = self.cv.canvasx(e.x), self.cv.canvasy(e.y)
+        for x1, y1, x2, y2, kind, iid in self.hit:
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                return (kind, iid)
+        return None
+
+    def _motion(self, e):
+        self._set_hover(self._at(e))
+
+    def _set_hover(self, h):
+        if h != self.hover:
+            self.hover = h
+            self.cv.config(cursor="hand2" if h else "")
+            self.draw()
+
+    def _click(self, e):
+        h = self._at(e)
+        if not h:
+            return
+        kind, iid = h
+        if kind == "new":
+            self.app.add_instance()
+        elif kind == "play":
+            self.app.select(iid)
+            self.app.launch(iid)
+        elif kind == "menu":
+            self.app.select(iid)
+            self.app.card_menu(e, iid)
+        else:
+            self.app.select(iid)
+
+    def _double(self, e):
+        h = self._at(e)
+        if h and h[0] == "card":
+            self.app.select(h[1])
+            self.app.launch(h[1])
+
+    def _context(self, e):
+        h = self._at(e)
+        if h and h[1]:
+            self.app.select(h[1])
+            self.app.card_menu(e, h[1])
+
+
+# --------------------------------------------------------------------------
+# Accounts page
+# --------------------------------------------------------------------------
+class AccountsPage(tk.Frame):
+    def __init__(self, master, app):
+        super().__init__(master, bg=C["bg"])
+        self.app = app
+        self.cancel = threading.Event()
+        self.code = self.url = ""
+        _, right, _ = app.header(self, "Accounts",
+                                 "Sign in with the Microsoft account that owns Minecraft: Java Edition.")
+        Btn(right, "Add Microsoft account", self.add_ms, "primary", h=42, icon="plus").pack(side="right")
+        self.signin = Card(self, height=212, fill="#0f1a13", outline="#1f3a2a", pad=24)
+        sb = self.signin.body
+        lbl(sb, "SIGN IN WITH MICROSOFT", 8, "bold", C["accent"], bg="#0f1a13").pack(anchor="w")
+        self.code_lbl = lbl(sb, "", 30, "bold", C["text"], mono=True, bg="#0f1a13")
+        self.code_lbl.pack(anchor="w", pady=(8, 2))
+        self.sub_lbl = lbl(sb, "", 10, color=C["muted"], bg="#0f1a13", wraplength=640, justify="left")
+        self.sub_lbl.pack(anchor="w")
+        row = tk.Frame(sb, bg="#0f1a13")
+        row.pack(anchor="w", pady=(16, 0))
+        Btn(row, "Copy code", self.copy, "secondary", h=36, bg="#0f1a13").pack(side="left")
+        Btn(row, "Open sign-in page", self.reopen, "secondary", h=36, bg="#0f1a13").pack(side="left", padx=8)
+        Btn(row, "Cancel", self.cancel_signin, "ghost", h=36, bg="#0f1a13").pack(side="left")
+        self.listf = tk.Frame(self, bg=C["bg"])
+        self.listf.pack(fill="x", padx=32, pady=(8, 0))
+        self.reload()
+
+    def reload(self):
+        for w in self.listf.winfo_children():
+            w.destroy()
+        app = self.app
+        if not app.accounts:
+            c = Card(self.listf, height=120)
+            c.pack(fill="x", pady=6)
+            lbl(c.body, "No accounts yet", 13, "bold", bg=C["card"]).pack(anchor="w", pady=(8, 2))
+            lbl(c.body, "Click “Add Microsoft account” to sign in. A Microsoft page opens with your code filled in.",
+                10, color=C["muted"], bg=C["card"]).pack(anchor="w")
+            return
+        cur = app.current_account()
+        for a in app.accounts:
+            card = Card(self.listf, height=86)
+            card.pack(fill="x", pady=6)
+            b = card.body
+            b.grid_columnconfigure(1, weight=1)
+            b.grid_rowconfigure(0, weight=1)
+            av = tk.Canvas(b, width=48, height=48, bg=C["card"], highlightthickness=0, bd=0)
+            av.grid(row=0, column=0, padx=(0, 16), sticky="w")
+            draw_avatar(av, 0, 0, 47, acct_key(a))
+            mid = tk.Frame(b, bg=C["card"])
+            mid.grid(row=0, column=1, sticky="w")
+            lbl(mid, a["username"], 13, "bold", bg=C["card"]).pack(anchor="w")
+            lbl(mid, "Microsoft account", 9,
+                color=C["muted"], bg=C["card"]).pack(anchor="w")
+            right = tk.Frame(b, bg=C["card"])
+            right.grid(row=0, column=2, sticky="e")
+            if cur and acct_key(a) == acct_key(cur):
+                pill(right, "DEFAULT", C["ink"], C["accent"]).pack(side="left", padx=(0, 10))
+            else:
+                Btn(right, "Make default", lambda a=a: self.set_default(a), "secondary", h=34, bg=C["card"]).pack(
+                    side="left", padx=(0, 8))
+            Btn(right, "Remove", lambda a=a: self.remove(a), "danger", h=34, bg=C["card"]).pack(side="left")
+
+    def set_default(self, a):
+        self.app.cfg["account"] = acct_key(a)
+        self.app.save_cfg()
+        self.app.refresh_accounts()
+        self.reload()
+
+    def remove(self, a):
+        if messagebox.askyesno("Remove account", f"Remove {a['username']}?"):
+            self.app.accounts.remove(a)
+            self.app.save_accounts()
+            self.app.refresh_accounts()
+            self.reload()
+
+
+    # ---- Microsoft sign-in
+    def show_signin(self, code, sub):
+        self.code_lbl.config(text=code, fg=C["text"])
+        self.sub_lbl.config(text=sub)
+        self.signin.pack(fill="x", padx=32, pady=(4, 8), before=self.listf)
+
+    def cancel_signin(self):
+        self.cancel.set()
+        self.signin.pack_forget()
+
+    def copy(self):
+        if self.code:
+            self.clipboard_clear()
+            self.clipboard_append(self.code)
+            self.app.toast("Code copied")
+
+    def reopen(self):
+        if self.url:
+            webbrowser.open(self.url)
+
+    def add_ms(self):
+        self.cancel.set()
+        self.cancel = cancel = threading.Event()
+        auth = MSAuth()
+        self.code = self.url = ""
+        self.show_signin("· · · · · ·", "Contacting Microsoft…")
+
+        def got_code(dc):
+            if cancel.is_set() or not self.winfo_exists():
+                return
+            url, code = dc["verification_uri"], dc["user_code"]
+            # Open the page with the code pre-filled (Microsoft accepts ?otc=CODE).
+            full = dc.get("verification_uri_complete")
+            if not full:
+                full = url + ("&" if "?" in url else "?") + "otc=" + urllib.parse.quote(code)
+            self.code, self.url = code, full
+            self.show_signin(code, "A Microsoft page is opening with this code already filled in. If the box is "
+                                   f"empty, type or paste the code at {url}. Waiting for you to finish signing in…")
+            self.clipboard_clear()
+            self.clipboard_append(code)
+            webbrowser.open(full)
+            self.app.bg(lambda: auth.minecraft_account(auth.poll_device(dc, cancel)),
+                        self.signed_in, self.failed)
+
+        self.app.bg(auth.start_device, got_code, self.failed)
+
+    def signed_in(self, acct):
+        self.app.add_account(acct)
+        if self.winfo_exists():
+            self.signin.pack_forget()
+            self.reload()
+        self.app.toast(f"Signed in as {acct['username']}")
+
+    def failed(self, err):
+        if self.cancel.is_set() or not self.winfo_exists():
+            return
+        self.code_lbl.config(text="Sign-in failed", fg=C["danger"])
+        self.sub_lbl.config(text=str(err))
 
 
 # --------------------------------------------------------------------------
 # Main window
 # --------------------------------------------------------------------------
+WINDOW_TITLE = APP_NAME
+
+
 class App:
     def __init__(self, root):
         self.root = root
-        root.title(APP_NAME)
-        root.geometry("900x640")
-        root.minsize(720, 480)
+        root.title(WINDOW_TITLE)
+        root.configure(bg=C["bg"])
+        w, h = 1180, 740
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        w, h = min(w, sw - 80), min(h, sh - 120)
+        root.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 3)}")
+        root.minsize(960, 620)
+        setup_style(root)
         self.q = queue.Queue()
         self.cfg = load_json(CONFIG, {})
         # Only Microsoft accounts are supported; ignore anything else left in an old file.
         self.accounts = [a for a in load_json(ACCOUNTS, {}).get("accounts", []) if a.get("type") == "msa"]
-        self.game_versions = []
-        self.busy = False
-
-        # toolbar
-        tb = ttk.Frame(root, padding=(10, 8))
-        tb.pack(fill="x")
-        self.btn_launch = ttk.Button(tb, text="▶ Launch", command=self.launch)
-        self.btn_launch.pack(side="left")
-        for text, cmd in (("Add instance", self.add_instance), ("Edit / Mods", self.edit_instance),
-                          ("Folder", self.open_instance), ("Delete", self.delete_instance)):
-            ttk.Button(tb, text=text, command=cmd).pack(side="left", padx=(6, 0))
-        ttk.Button(tb, text="Accounts", command=lambda: AccountsDialog(self)).pack(side="right")
-        self.acct_var = tk.StringVar()
-        self.acct_box = ttk.Combobox(tb, textvariable=self.acct_var, state="readonly", width=28)
-        self.acct_box.pack(side="right", padx=8)
-        self.acct_box.bind("<<ComboboxSelected>>", self.acct_changed)
-
-        # instance list
-        mid = ttk.Frame(root, padding=(10, 0))
-        mid.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(mid, columns=("name", "mc", "loader", "mods"), show="headings", height=8)
-        for c, t, w in (("name", "Instance", 300), ("mc", "Minecraft", 110), ("loader", "Loader", 90), ("mods", "Mods", 70)):
-            self.tree.heading(c, text=t)
-            self.tree.column(c, width=w, stretch=(c == "name"))
-        self.tree.pack(fill="both", expand=True)
-        self.tree.bind("<Double-1>", lambda _e: self.launch())
-
-        # progress + console
-        self.bar = ttk.Progressbar(root, mode="determinate")
-        self.bar.pack(fill="x", padx=10, pady=(8, 0))
-        self.status = ttk.Label(root, text="Ready")
-        self.status.pack(anchor="w", padx=10)
-        lf = ttk.Frame(root, padding=(10, 4, 10, 10))
-        lf.pack(fill="both", expand=True)
-        self.logbox = tk.Text(lf, height=9, state="disabled", wrap="word")
-        sb = ttk.Scrollbar(lf, command=self.logbox.yview)
-        self.logbox.configure(yscrollcommand=sb.set)
-        self.logbox.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-
-        self.log(f"{APP_NAME} {APP_VERSION} - not an official Minecraft product; not affiliated with Mojang or Microsoft.")
+        self.game_versions, self.instances = [], []
+        self.busy, self.phase = False, None
+        self.sel_id = self.cfg.get("last_instance")
+        self.page = "instances"
+        self.build()
+        self.log(f"{APP_NAME} {APP_VERSION}")
+        self.log("Not an official Minecraft product; not affiliated with Mojang or Microsoft.")
         self.log(f"Data folder: {ROOT}")
         self.refresh_accounts()
         self.refresh_instances()
-        if not self.accounts:
-            self.log("No account yet. Click Accounts and sign in with the Microsoft account that owns Minecraft.")
         self.bg(lambda: [(v["version"], v["stable"]) for v in get_json(f"{FABRIC_META}/versions/game")],
                 self.set_versions, lambda e: self.log(f"Could not load version list: {e}"))
         root.after(100, self.poll)
+
+    # ---- layout
+    def header(self, parent, title, sub):
+        f = tk.Frame(parent, bg=C["bg"])
+        f.pack(fill="x", padx=32, pady=(30, 10))
+        left = tk.Frame(f, bg=C["bg"])
+        left.pack(side="left")
+        lbl(left, title, 24, "bold", bg=C["bg"]).pack(anchor="w")
+        s = lbl(left, sub, 10, color=C["muted"], bg=C["bg"])
+        s.pack(anchor="w", pady=(2, 0))
+        right = tk.Frame(f, bg=C["bg"])
+        right.pack(side="right")
+        return f, right, s
+
+    def build(self):
+        root = self.root
+        root.grid_columnconfigure(1, weight=1)
+        root.grid_rowconfigure(0, weight=1)
+        side = tk.Frame(root, bg=C["side"], width=244)
+        side.grid(row=0, column=0, sticky="ns")
+        side.pack_propagate(False)
+        tk.Frame(root, bg=C["line"], width=1).grid(row=0, column=0, sticky="nse")
+        main = tk.Frame(root, bg=C["bg"])
+        main.grid(row=0, column=1, sticky="nsew")
+        main.grid_columnconfigure(0, weight=1)
+        main.grid_rowconfigure(0, weight=1)
+
+        # brand
+        brand = tk.Canvas(side, width=244, height=92, bg=C["side"], highlightthickness=0, bd=0)
+        brand.pack(fill="x")
+        draw_logo(brand, 24, 26, 40)
+        brand.create_text(78, 40, text="Spectra", anchor="w", fill=C["text"], font=font(16, "bold"))
+        brand.create_text(79, 60, text="L A U N C H E R", anchor="w", fill=C["dim"], font=font(7, "bold"))
+
+        # navigation
+        nav = tk.Frame(side, bg=C["side"])
+        nav.pack(fill="x", padx=12, pady=(6, 0))
+        self.nav = {}
+        for key, text, icon in (("instances", "Instances", "grid"), ("accounts", "Accounts", "user"),
+                                ("console", "Console", "term"), ("about", "About", "info")):
+            n = NavItem(nav, text, icon, lambda k=key: self.show_page(k))
+            n.pack(fill="x", pady=2)
+            self.nav[key] = n
+
+        # account chip + disclaimer
+        foot = tk.Frame(side, bg=C["side"])
+        foot.pack(side="bottom", fill="x", padx=12, pady=(0, 14))
+        lbl(foot, "Not an official Minecraft product.\nNot affiliated with Mojang or Microsoft.", 7,
+            color=C["dim"], bg=C["side"], justify="left").pack(anchor="w", padx=4, pady=(10, 0), side="bottom")
+        self.chip = tk.Canvas(foot, width=220, height=62, bg=C["side"], highlightthickness=0, bd=0, cursor="hand2")
+        self.chip.pack(side="bottom")
+        self.chip.bind("<Button-1>", lambda _e: self.show_page("accounts"))
+        self.chip.bind("<Enter>", lambda _e: self.draw_chip(True))
+        self.chip.bind("<Leave>", lambda _e: self.draw_chip(False))
+
+        # pages
+        holder = tk.Frame(main, bg=C["bg"])
+        holder.grid(row=0, column=0, sticky="nsew")
+        holder.grid_columnconfigure(0, weight=1)
+        holder.grid_rowconfigure(0, weight=1)
+        self.pages = {}
+        self.pages["instances"] = self.build_instances(holder)
+        self.pages["accounts"] = AccountsPage(holder, self)
+        self.pages["console"] = self.build_console(holder)
+        self.pages["about"] = self.build_about(holder)
+        for p in self.pages.values():
+            p.grid(row=0, column=0, sticky="nsew")
+
+        # launch bar
+        bar = tk.Frame(main, bg=C["side"], height=98)
+        bar.grid(row=1, column=0, sticky="ew")
+        bar.pack_propagate(False)
+        tk.Frame(bar, bg=C["line"], height=1).pack(fill="x", side="top")
+        inner = tk.Frame(bar, bg=C["side"])
+        inner.pack(fill="both", expand=True, padx=32)
+        inner.grid_columnconfigure(1, weight=1)
+        inner.grid_rowconfigure(0, weight=1)
+        left = tk.Frame(inner, bg=C["side"], width=300)
+        left.grid(row=0, column=0, sticky="w")
+        self.bar_icon = tk.Canvas(left, width=54, height=54, bg=C["side"], highlightthickness=0, bd=0)
+        self.bar_icon.pack(side="left")
+        lt = tk.Frame(left, bg=C["side"])
+        lt.pack(side="left", padx=(14, 0))
+        self.bar_name = lbl(lt, "", 12, "bold", bg=C["side"])
+        self.bar_name.pack(anchor="w")
+        self.bar_meta = lbl(lt, "", 9, color=C["muted"], bg=C["side"])
+        self.bar_meta.pack(anchor="w")
+        mid = tk.Frame(inner, bg=C["side"])
+        mid.grid(row=0, column=1, sticky="ew", padx=28)
+        self.status = lbl(mid, "Ready", 9, color=C["muted"], bg=C["side"], anchor="w")
+        self.status.pack(fill="x", pady=(0, 7))
+        self.meter = Meter(mid, height=10, bg=C["side"])
+        self.meter.pack(fill="x")
+        self.btn_launch = Btn(inner, "PLAY", self.launch, "primary", w=190, h=58, size=12, r=16, bg=C["side"], icon="play")
+        self.btn_launch.grid(row=0, column=2, sticky="e")
+        self.show_page("instances")
+
+    def build_instances(self, parent):
+        f = tk.Frame(parent, bg=C["bg"])
+        _, right, self.inst_sub = self.header(f, "Instances", "")
+        Btn(right, "New instance", self.add_instance, "primary", h=42, icon="plus").pack()
+        self.grid_view = InstanceGrid(f, self)
+        self.grid_view.pack(fill="both", expand=True)
+        return f
+
+    def build_console(self, parent):
+        f = tk.Frame(parent, bg=C["bg"])
+        _, right, _ = self.header(f, "Console", "Launcher activity and game output.")
+        Btn(right, "Clear", self.clear_log, "secondary", h=38).pack(side="right")
+        Btn(right, "Copy all", self.copy_log, "secondary", h=38).pack(side="right", padx=(0, 8))
+        box = tk.Frame(f, bg=C["line"], padx=1, pady=1)
+        box.pack(fill="both", expand=True, padx=32, pady=(4, 28))
+        inner = tk.Frame(box, bg="#090d0a")
+        inner.pack(fill="both", expand=True)
+        self.logbox = tk.Text(inner, bg="#090d0a", fg="#b4c4ba", insertbackground=C["accent"], relief="flat", bd=0,
+                              highlightthickness=0, wrap="word", font=font(9, mono=True), padx=16, pady=14,
+                              state="disabled", selectbackground="#1d3a2a", spacing1=2)
+        sb = ttk.Scrollbar(inner, command=self.logbox.yview)
+        self.logbox.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.logbox.pack(side="left", fill="both", expand=True)
+        self.logbox.tag_configure("err", foreground=C["danger"])
+        self.logbox.tag_configure("warn", foreground=C["warn"])
+        self.logbox.tag_configure("sys", foreground=C["accent"])
+        return f
+
+    def build_about(self, parent):
+        f = tk.Frame(parent, bg=C["bg"])
+        self.header(f, "About", "Free and open source.")
+        card = Card(f, height=330, pad=28)
+        card.pack(fill="x", padx=32, pady=(6, 0))
+        b = card.body
+        top = tk.Frame(b, bg=C["card"])
+        top.grid(row=0, column=0, sticky="w")
+        logo = tk.Canvas(top, width=78, height=78, bg=C["card"], highlightthickness=0, bd=0)
+        logo.pack(side="left", padx=(0, 20))
+        draw_logo(logo, 0, 0, 74)
+        tt = tk.Frame(top, bg=C["card"])
+        tt.pack(side="left")
+        lbl(tt, APP_NAME, 20, "bold", bg=C["card"]).pack(anchor="w")
+        lbl(tt, f"Version {APP_VERSION}", 10, color=C["muted"], bg=C["card"]).pack(anchor="w")
+        lbl(b, "A launcher for Minecraft: Java Edition with the Fabric mod loader. Create instances, install mods "
+               "and their dependencies, and play with your own Microsoft account. Spectra runs entirely on your "
+               "computer and collects no data.", 10, color=C["text"], bg=C["card"], wraplength=640,
+            justify="left").grid(row=2, column=0, sticky="w", pady=(20, 10))
+        lbl(b, "Spectra Launcher is not an official Minecraft product. It is not approved by or associated with "
+               "Mojang or Microsoft, and it is not affiliated with the Fabric project.", 9, color=C["muted"],
+            bg=C["card"], wraplength=640, justify="left").grid(row=3, column=0, sticky="w")
+        row = tk.Frame(b, bg=C["card"])
+        row.grid(row=4, column=0, sticky="w", pady=(20, 0))
+        Btn(row, "Source on GitHub", lambda: webbrowser.open("https://github.com/mcpacks-site/Spectra-launcher"),
+            "secondary", h=38, bg=C["card"]).pack(side="left")
+        Btn(row, "Open data folder", lambda: open_path(ROOT), "secondary", h=38, bg=C["card"]).pack(side="left", padx=8)
+        return f
+
+    # ---- navigation
+    def show_page(self, name):
+        self.page = name
+        self.pages[name].tkraise()
+        for k, n in self.nav.items():
+            n._set(active=(k == name))
+        if name == "console":
+            self.logbox.see("end")
+
+    # ---- small UI helpers
+    def toast(self, text, kind="ok"):
+        col = C["accent"] if kind == "ok" else C["danger"]
+        t = tk.Frame(self.root, bg=col, padx=1, pady=1)
+        inner = tk.Frame(t, bg=C["card2"])
+        inner.pack()
+        tk.Frame(inner, bg=col, width=4).pack(side="left", fill="y")
+        lbl(inner, text, 10, "bold", bg=C["card2"]).pack(side="left", padx=16, pady=12)
+        t.place(relx=1.0, rely=1.0, x=-28, y=-122, anchor="se")
+        t.lift()
+        self.root.after(2600, t.destroy)
+
+    def draw_chip(self, hover=False):
+        cv, a = self.chip, self.current_account()
+        cv.delete("all")
+        rrect(cv, 1, 1, 219, 61, 14, fill="#121b15" if hover else "#0e1510", outline="#2a3a31" if hover else C["line"])
+        if a:
+            draw_avatar(cv, 12, 12, 38, acct_key(a))
+            cv.create_text(62, 24, text=fit_text(a["username"], font(10, "bold"), 140), anchor="w",
+                           fill=C["text"], font=font(10, "bold"))
+            cv.create_text(62, 42, text="Microsoft account",
+                           anchor="w", fill=C["muted"], font=font(8))
+        else:
+            cv.create_oval(12, 12, 50, 50, fill=C["card2"], outline=C["line2"])
+            draw_icon(cv, "user", 31, 31, 18, C["muted"])
+            cv.create_text(62, 24, text="Not signed in", anchor="w", fill=C["text"], font=font(10, "bold"))
+            cv.create_text(62, 42, text="Click to add an account", anchor="w", fill=C["accent"], font=font(8))
+
+    def update_bar(self):
+        inst = self.instance_by_id(self.sel_id)
+        ic = self.bar_icon
+        ic.delete("all")
+        if inst:
+            c1, c2 = inst_colors(inst["id"])
+            ic.create_image(1, 1, anchor="nw", image=grad_image(ic, 52, 52, c1, c2, 12))
+            ic.create_text(27, 27, text=inst["version"].split("-")[0][:7], fill="#ffffff", font=font(9, "bold"))
+            self.bar_name.config(text=fit_text(inst["name"], font(12, "bold"), 210))
+            self.bar_meta.config(text=f"Minecraft {inst['version']}  ·  Fabric  ·  {inst.get('ram_gb', 4):g} GB")
+        else:
+            rrect(ic, 1, 1, 53, 53, 12, fill="#0e1510", outline=C["line2"], dash=(3, 3))
+            self.bar_name.config(text="No instance selected")
+            self.bar_meta.config(text="Create or pick one to play")
+        self.btn_launch.set_enabled(bool(inst) and not self.busy)
 
     # ---- persistence
     def save_cfg(self):
@@ -1074,27 +2125,62 @@ class App:
                 self.q.put(("cb", ok, res))
         threading.Thread(target=run, daemon=True).start()
 
+    def append_log(self, text):
+        lb = self.logbox
+        low = text.lower()
+        tag = "err" if ("error" in low or "exception" in low or "failed" in low) else (
+            "warn" if "warn" in low else ("sys" if text.startswith(("Preparing", "Launching", "Using ", "Java:")) else ""))
+        lb.configure(state="normal")
+        lb.insert("end", text + "\n", tag)
+        if int(lb.index("end-1c").split(".")[0]) > 4000:
+            lb.delete("1.0", "500.0")
+        lb.configure(state="disabled")
+        lb.see("end")
+
+    def clear_log(self):
+        self.logbox.configure(state="normal")
+        self.logbox.delete("1.0", "end")
+        self.logbox.configure(state="disabled")
+
+    def copy_log(self):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.logbox.get("1.0", "end"))
+        self.toast("Console copied")
+
     def poll(self):
         try:
             while True:
                 msg = self.q.get_nowait()
                 kind = msg[0]
                 if kind == "log":
-                    self.logbox.configure(state="normal")
-                    self.logbox.insert("end", msg[1] + "\n")
-                    self.logbox.see("end")
-                    self.logbox.configure(state="disabled")
+                    self.append_log(msg[1])
+                    if self.phase == "prep":
+                        self.status.config(text=fit_text(msg[1], font(9), 560))
                 elif kind == "progress":
                     _, d, t, label = msg
-                    self.bar.configure(maximum=t, value=d)
-                    self.status.configure(text=f"{label}: {d}/{t}")
+                    self.meter.set(d / max(1, t))
+                    self.status.config(text=f"{label}   {d} / {t}")
                 elif kind == "busy":
                     self.busy = msg[1]
-                    self.btn_launch.configure(state="disabled" if msg[1] else "normal")
-                    if not msg[1]:
-                        self.status.configure(text="Ready")
-                        self.bar.configure(value=0)
+                    if msg[1]:
+                        self.phase = "prep"
+                        self.meter.indeterminate(True)
+                        self.status.config(text="Preparing…")
+                        self.btn_launch.configure_text("LAUNCHING")
+                    else:
+                        self.phase = None
+                        self.meter.set(0)
+                        self.status.config(text="Ready")
+                        self.btn_launch.configure_text("PLAY")
+                    self.update_bar()
+                    self.grid_view.draw()
+                elif kind == "running":
+                    self.phase = "run"
+                    self.meter.set(1.0)
+                    self.status.config(text=f"Playing {msg[1]}")
+                    self.btn_launch.configure_text("PLAYING")
                 elif kind == "error":
+                    self.toast("Launch failed", "err")
                     messagebox.showerror("Error", msg[1])
                 elif kind == "cb":
                     if msg[1]:
@@ -1116,15 +2202,9 @@ class App:
         return self.accounts[0] if self.accounts else None
 
     def refresh_accounts(self):
-        self.acct_box.configure(values=[acct_label(a) for a in self.accounts])
-        cur = self.current_account()
-        self.acct_var.set(acct_label(cur) if cur else "Not signed in")
-
-    def acct_changed(self, _e=None):
-        i = self.acct_box.current()
-        if 0 <= i < len(self.accounts):
-            self.cfg["account"] = acct_key(self.accounts[i])
-            self.save_cfg()
+        self.draw_chip()
+        if "accounts" in getattr(self, "pages", {}):
+            self.pages["accounts"].reload()
 
     def add_account(self, acct):
         self.accounts = [a for a in self.accounts if acct_key(a) != acct_key(acct)] + [acct]
@@ -1135,7 +2215,7 @@ class App:
 
     def fresh_account(self, acct):
         """Refresh an expiring Microsoft token (runs on a worker thread)."""
-        if time.time() < acct.get("expires_at", 0) - 300:
+        if acct.get("type") != "msa" or time.time() < acct.get("expires_at", 0) - 300:
             return acct
         auth = MSAuth()
         new = auth.minecraft_account(auth.refresh(acct["refresh_token"]))
@@ -1144,55 +2224,80 @@ class App:
         return new
 
     # ---- instances
-    def refresh_instances(self, select=None):
-        keep = select or (self.tree.selection()[0] if self.tree.selection() else None)
-        self.tree.delete(*self.tree.get_children())
-        for i in list_instances():
-            self.tree.insert("", "end", iid=i["id"],
-                             values=(i["name"], i["version"], "Fabric", len(i.get("mods", {}))))
-        if keep and self.tree.exists(keep):
-            self.tree.selection_set(keep)
+    def instance_by_id(self, iid):
+        return next((i for i in self.instances if i["id"] == iid), None)
 
-    def selected_instance(self):
-        sel = self.tree.selection()
-        if not sel:
-            messagebox.showinfo("Instance", "Select an instance first (or add one).")
-            return None
-        return load_json(INSTANCES / sel[0] / "instance.json", None)
+    def refresh_instances(self, select=None):
+        self.instances = list_instances()
+        if select:
+            self.sel_id = select
+        if not self.instance_by_id(self.sel_id):
+            self.sel_id = self.instances[0]["id"] if self.instances else None
+        n = len(self.instances)
+        self.inst_sub.config(text=f"{n} instance{'s' if n != 1 else ''}  ·  Minecraft: Java Edition with Fabric")
+        self.update_bar()
+        self.grid_view.draw()
+
+    def select(self, iid):
+        if iid != self.sel_id:
+            self.sel_id = iid
+            self.cfg["last_instance"] = iid
+            self.save_cfg()
+            self.update_bar()
+            self.grid_view.draw()
+
+    def selected_instance(self, iid=None):
+        iid = iid or self.sel_id
+        inst = load_json(INSTANCES / iid / "instance.json", None) if iid else None
+        if not inst:
+            self.toast("Select an instance first", "err")
+        return inst
+
+    def card_menu(self, event, iid):
+        m = tk.Menu(self.root, tearoff=0, bg=C["card2"], fg=C["text"], activebackground=C["accent2"],
+                    activeforeground=C["ink"], bd=0, relief="flat", font=font(10))
+        m.add_command(label="Play", command=lambda: self.launch(iid))
+        m.add_command(label="Settings…", command=lambda: self.edit_instance(iid))
+        m.add_command(label="Mods…", command=lambda: self.edit_instance(iid, tab=1))
+        m.add_command(label="Open folder", command=lambda: self.open_instance(iid))
+        m.add_separator()
+        m.add_command(label="Delete…", command=lambda: self.delete_instance(iid))
+        m.tk_popup(event.x_root, event.y_root)
 
     def add_instance(self):
         if not self.game_versions:
-            messagebox.showinfo("Please wait", "Still loading the version list...")
+            self.toast("Still loading the version list…", "err")
             return
         AddInstanceDialog(self)
 
-    def edit_instance(self):
-        inst = self.selected_instance()
+    def edit_instance(self, iid=None, tab=0):
+        inst = self.selected_instance(iid)
         if inst:
-            EditInstanceDialog(self, inst)
+            EditInstanceDialog(self, inst, tab)
 
-    def open_instance(self):
-        inst = self.selected_instance()
+    def open_instance(self, iid=None):
+        inst = self.selected_instance(iid)
         if inst:
             open_path(game_dir_of(inst))
 
-    def delete_instance(self):
-        inst = self.selected_instance()
-        if inst and messagebox.askyesno("Delete", f"Delete '{inst['name']}' and all its worlds/mods?"):
+    def delete_instance(self, iid=None):
+        inst = self.selected_instance(iid)
+        if inst and messagebox.askyesno("Delete", f"Delete '{inst['name']}' and all its worlds and mods?"):
             shutil.rmtree(INSTANCES / inst["id"], ignore_errors=True)
             self.refresh_instances()
+            self.toast(f"Deleted {inst['name']}")
 
     # ---- launching
-    def launch(self):
+    def launch(self, iid=None):
         if self.busy:
             return
-        inst = self.selected_instance()
+        inst = self.selected_instance(iid)
         if not inst:
             return
         acct = self.current_account()
         if not acct:
-            messagebox.showinfo("Sign in", "Sign in with the Microsoft account that owns Minecraft first.")
-            AccountsDialog(self)
+            self.show_page("accounts")
+            self.toast("Sign in with your Microsoft account first", "err")
             return
         self.q.put(("busy", True))
         threading.Thread(target=self.worker, args=(inst, acct), daemon=True).start()
@@ -1206,6 +2311,7 @@ class App:
             proc = subprocess.Popen(cmd, cwd=str(game_dir), stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True, errors="replace",
                                     creationflags=NOWIN)
+            self.q.put(("running", f"{inst['name']}"))
             for line in proc.stdout:
                 self.log(line.rstrip())
             self.log(f"Minecraft exited with code {proc.wait()}.")
