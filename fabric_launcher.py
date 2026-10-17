@@ -2339,7 +2339,28 @@ def skin_parts(slim):
         over = box_faces(ouv[0], ouv[1], w, h, d, pos, e, True)
         center = (pos[0] + w / 2.0, pos[1] + h / 2.0, pos[2] + d / 2.0)
         parts.append({"name": name, "base": base, "over": over, "center": center})
+    # cape: a 10x16x1 slab behind the body; texture is 64x32 and its outer side is the "front" slot (1,1)
+    cf = box_faces(0, 0, 10, 16, 1, (-5, 8, -3), 0, 2)
+    cf[0] = cf[0][:3] + ((12, 1, 10, 16),) + cf[0][4:]   # inner side (faces the body)
+    cf[1] = cf[1][:3] + ((1, 1, 10, 16),) + cf[1][4:]    # outer side (what you see from behind)
+    parts.append({"name": "Cape", "cape": True, "base": cf, "over": [], "center": (0, 16, -2.5)})
     return parts
+
+
+def cape_from_png(data):
+    """Cape PNG -> 64x32 RGBA bytearray (HD capes are scaled down)."""
+    w, h, rgba = png_decode(data)
+    if w % 64 or h * 2 != w:
+        raise ValueError(f"Unexpected cape size {w}x{h}.")
+    k = w // 64
+    if k == 1:
+        return bytearray(rgba)
+    out = bytearray(64 * 32 * 4)
+    for y in range(32):
+        for x in range(64):
+            s = ((y * k) * w + x * k) * 4
+            out[(y * 64 + x) * 4:(y * 64 + x) * 4 + 4] = rgba[s:s + 4]
+    return out
 
 
 FACE_LABELS = ("front", "back", "right", "left", "top", "bottom")
@@ -2349,6 +2370,8 @@ def net_rects(slim):
     """Texture rectangles for guides: (part, layer, label, x, y, w, h)."""
     out = []
     for p in skin_parts(slim):
+        if p.get("cape"):
+            continue
         for layer, faces in (("base", p["base"]), ("overlay", p["over"])):
             for lab, f in zip(FACE_LABELS, faces):
                 out.append((p["name"], layer, lab) + tuple(f[3]))
@@ -2377,6 +2400,7 @@ class SkinView(tk.Canvas):
         super().__init__(master, width=width, height=height, bg=bg or C["card"], highlightthickness=0, bd=0,
                          cursor="fleur")
         self.px = template_skin()
+        self.cape_px = None
         self.slim, self.show_overlay = False, True
         self.yaw, self.pitch, self.zoom = -0.55, 0.28, 1.0
         self.auto, self.on_paint, self.paint_mode, self.paint_layer = False, on_paint, False, "base"
@@ -2405,6 +2429,11 @@ class SkinView(tk.Canvas):
         if slim is not None and bool(slim) != self.slim:
             self.set_slim(slim)
             return
+        self.invalidate()
+
+    def set_cape(self, px):
+        """px: 64x32 RGBA bytes, or None for no cape."""
+        self.cape_px = px
         self.invalidate()
 
     def invalidate(self, *_):
@@ -2454,7 +2483,7 @@ class SkinView(tk.Canvas):
         if r is not None:
             return r
         tx, ty, tw, th = face[3]
-        px, runs = self.px, []
+        px, runs = (self.cape_px if face[5] == 2 else self.px), []
         for j in range(th):
             i = 0
             while i < tw:
@@ -2511,6 +2540,8 @@ class SkinView(tk.Canvas):
         order = sorted(self.parts, key=lambda p: rot(*p["center"])[2])
         self._drawn = []
         for part in order:
+            if part.get("cape") and self.cape_px is None:
+                continue
             groups = [part["base"]] + ([part["over"]] if self.show_overlay else [])
             for faces in groups:
                 for face in faces:
@@ -2540,6 +2571,8 @@ class SkinView(tk.Canvas):
     def texel_at(self, x, y):
         """Find (tx, ty) under a screen point on the visible face of the chosen layer."""
         for p00, p10, p01, p11, face in reversed(self._drawn):
+            if face[5] == 2:
+                continue
             if (face[5] and self.paint_layer != "overlay") or (not face[5] and self.paint_layer != "base"):
                 continue
             ux, uy = p10[0] - p00[0], p10[1] - p00[1]
@@ -2637,6 +2670,36 @@ def account_skin(token):
     if not sk:
         raise IOError("This account has no skin set.")
     return http_get(sk["url"].replace("http://", "https://")), sk.get("variant", "CLASSIC").upper() == "SLIM"
+
+
+def account_capes(token):
+    """The capes this account owns: [{id, alias, active, px}] (textures downloaded)."""
+    status, prof = http_json(SKIN_API, headers={"Authorization": f"Bearer {token}"})
+    if status != 200:
+        raise IOError("Could not read your profile from Mojang.")
+    out = []
+    for c in prof.get("capes", []):
+        try:
+            px = cape_from_png(http_get(c["url"].replace("http://", "https://")))
+        except Exception:  # noqa: BLE001
+            continue
+        out.append({"id": c["id"], "alias": c.get("alias") or "Cape", "active": c.get("state") == "ACTIVE", "px": px})
+    return out
+
+
+def cape_set(token, cape_id):
+    """Equip a cape, or hide the cape when cape_id is None."""
+    hdr = {"Authorization": f"Bearer {token}", "User-Agent": UA, "Accept": "application/json"}
+    body = None
+    if cape_id:
+        body = json.dumps({"capeId": cape_id}).encode()
+        hdr["Content-Type"] = "application/json"
+    req = urllib.request.Request(SKIN_API + "/capes/active", data=body, method="PUT" if cape_id else "DELETE", headers=hdr)
+    try:
+        urllib.request.urlopen(req, timeout=30).read()
+    except urllib.error.HTTPError as e:
+        raise IOError({401: "Your sign-in expired. Remove and re-add your account.",
+                       429: "Too many changes. Wait a minute and try again."}.get(e.code, f"Mojang returned {e.code}."))
 
 
 # --------------------------------------------------------------------------
@@ -3110,6 +3173,7 @@ class SkinsPage(tk.Frame):
         super().__init__(master, bg=C["bg"])
         self.app = app
         self.items, self.sel, self.hover, self.hit = [], None, None, []
+        self.capes, self.cape_sel, self.cape_hover, self.cape_hit, self.cape_user = [], None, None, [], None
         _, right, _ = app.header(self, "Skins", "Change your look. Upload a PNG or design one in the skin maker.")
         Btn(right, "Skin maker", self.new_maker, "primary", h=42).pack(side="right")
         Btn(right, "Upload PNG", self.upload, "secondary", h=42).pack(side="right", padx=(0, 10))
@@ -3151,6 +3215,20 @@ class SkinsPage(tk.Frame):
         self.cv.bind("<Leave>", lambda _e: self._set_hover(None))
         self.cv.bind("<Button-1>", self._click)
         self.cv.bind("<Double-Button-1>", lambda _e: self.apply())
+        ch = tk.Frame(wrap, bg=C["bg"])
+        ch.pack(fill="x", pady=(10, 8))
+        lbl(ch, "MY CAPES", 8, "bold", C["dim"], bg=C["bg"]).pack(side="left")
+        Btn(ch, "Refresh", lambda: self.load_capes(True), "ghost", h=26, w=70, size=8, bg=C["bg"]).pack(side="right")
+        self.b_cape = Btn(ch, "Equip cape", self.equip_cape, "secondary", h=26, w=96, size=8, bg=C["bg"])
+        self.b_cape.pack(side="right", padx=(0, 6))
+        self.cv2 = tk.Canvas(wrap, bg=C["bg"], highlightthickness=0, bd=0, height=176)
+        self.cv2.pack(fill="x")
+        self.cv2.bind("<Configure>", lambda _e: self.draw_capes())
+        self.cv2.bind("<Motion>", self._cape_motion)
+        self.cv2.bind("<Leave>", lambda _e: self._cape_hover(None))
+        self.cv2.bind("<Button-1>", self._cape_click)
+        self.cv2.bind("<Double-Button-1>", lambda _e: self.equip_cape())
+        self.cape_note = "Sign in with a Microsoft account to see your capes."
         self.reload()
 
     # ---- data
@@ -3290,6 +3368,111 @@ class SkinsPage(tk.Frame):
             return skin_from_png(png), slim
         self.app.bg(work, ok=lambda r: self.add_dialog(acct["username"], r[1], r[0]),
                     fail=lambda e: self.app.toast(str(e), "err"))
+
+    # ---- capes
+    def load_capes(self, force=False):
+        acct = self.app.current_account()
+        if not acct or acct.get("type") != "msa":
+            self.capes, self.cape_user = [], None
+            self.cape_note = "Sign in with a Microsoft account to see your capes."
+            self.draw_capes()
+            return
+        if not force and self.cape_user == acct.get("uuid"):
+            return
+        self.cape_user = acct.get("uuid")
+        self.cape_note = "Loading your capes…"
+        self.draw_capes()
+
+        def work():
+            return account_capes(self.app.fresh_account(acct)["access_token"])
+
+        def ok(capes):
+            self.capes = capes
+            act = next((c for c in capes if c["active"]), None)
+            self.cape_sel = act["id"] if act else None
+            self.cape_note = "" if capes else "This account doesn't own any capes."
+            self.show_cape()
+            self.draw_capes()
+
+        def fail(e):
+            self.cape_user = None
+            self.cape_note = str(e)
+            self.draw_capes()
+        self.app.bg(work, ok=ok, fail=fail)
+
+    def show_cape(self):
+        c = next((c for c in self.capes if c["id"] == self.cape_sel), None)
+        self.view.set_cape(c["px"] if c else None)
+
+    def draw_capes(self):
+        cv = self.cv2
+        cv.delete("all")
+        self.cape_hit = []
+        if not self.capes:
+            cv.create_text(4, 6, anchor="nw", fill=C["muted"], font=font(10), text=self.cape_note)
+            self.b_cape.set_enabled(False)
+            return
+        self.b_cape.set_enabled(True)
+        TW, TH, G, Z = 104, 164, 12, 6
+        for n, c in enumerate([None] + self.capes):
+            cid = c["id"] if c else None
+            x = n * (TW + G)
+            sel, hov = cid == self.cape_sel, (cid if c else "none") == self.cape_hover
+            rrect(cv, x, 0, x + TW, TH, 14, fill=C["card2"] if (sel or hov) else C["card"],
+                  outline=C["accent"] if sel else (C["line2"] if hov else C["line"]), width=2 if sel else 1)
+            if c:
+                px = c["px"]
+                for j in range(16):
+                    for i in range(10):
+                        o = ((1 + j) * 64 + 1 + i) * 4
+                        if px[o + 3] >= 128:
+                            col = "#%02x%02x%02x" % (px[o], px[o + 1], px[o + 2])
+                            cv.create_rectangle(x + 22 + i * Z, 12 + j * Z * 0.82, x + 22 + i * Z + Z, 12 + (j + 1) * Z * 0.82,
+                                                fill=col, outline=col)
+            else:
+                cv.create_text(x + TW // 2, 62, text="No cape", fill=C["muted"], font=font(10))
+            name = "None" if not c else c["alias"]
+            cv.create_text(x + TW // 2, TH - 26, text=fit_text(name, font(9, "bold"), TW - 14), fill=C["text"], font=font(9, "bold"))
+            if c and c["active"]:
+                cv.create_text(x + TW // 2, TH - 11, text="Equipped", fill=C["accent"], font=font(8, "bold"))
+            self.cape_hit.append((x, 0, x + TW, TH, cid if c else "none"))
+
+    def _cape_at(self, e):
+        return next((h[4] for h in self.cape_hit if h[0] <= e.x <= h[2] and h[1] <= e.y <= h[3]), False)
+
+    def _cape_motion(self, e):
+        self._cape_hover(self._cape_at(e) or None)
+
+    def _cape_hover(self, cid):
+        if cid != self.cape_hover:
+            self.cape_hover = cid
+            self.cv2.config(cursor="hand2" if cid else "")
+            self.draw_capes()
+
+    def _cape_click(self, e):
+        cid = self._cape_at(e)
+        if cid is False:
+            return
+        self.cape_sel = None if cid == "none" else cid
+        self.show_cape()
+        self.draw_capes()
+
+    def equip_cape(self):
+        acct = self.app.current_account()
+        if not acct or acct.get("type") != "msa":
+            self.app.toast("Sign in with a Microsoft account first", "err")
+            return
+        cid = self.cape_sel
+
+        def work():
+            cape_set(self.app.fresh_account(acct)["access_token"], cid)
+
+        def ok(_r):
+            for c in self.capes:
+                c["active"] = c["id"] == cid
+            self.draw_capes()
+            self.app.toast("Cape changed" if cid else "Cape removed")
+        self.app.bg(work, ok=ok, fail=lambda e: self.app.toast(str(e), "err"))
 
 
 # --------------------------------------------------------------------------
@@ -3496,6 +3679,8 @@ class App:
             self.logbox.see("end")
         if name == "cursor":
             self.pages["cursor"].draw()
+        if name == "skins":
+            self.pages["skins"].load_capes()
 
     # ---- skins
     def apply_skin(self, px, slim):

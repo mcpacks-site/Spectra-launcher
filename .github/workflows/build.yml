@@ -25,6 +25,10 @@ jobs:
             name: Linux
             asset: SpectraLauncher-Linux.zip
     runs-on: ${{ matrix.os }}
+    env:
+      # Signing is optional: these are true only if you've added the secrets (see SIGNING.md)
+      HAS_MAC_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
+      HAS_NOTARY: ${{ secrets.APPLE_ID != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -42,20 +46,70 @@ jobs:
       - name: Build (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        run: pyinstaller --noconfirm --windowed --onefile --icon icon.ico --name SpectraLauncher fabric_launcher.py
+
+      - name: Upload unsigned exe for signing
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
+        id: unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-exe
+          path: dist/SpectraLauncher.exe
+
+      - name: Sign exe (SignPath)
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Use the signed exe
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
+        shell: pwsh
         run: |
-          pyinstaller --noconfirm --windowed --onefile --icon icon.ico --name SpectraLauncher fabric_launcher.py
-          Compress-Archive -Path dist/SpectraLauncher.exe -DestinationPath ${{ matrix.asset }}
+          $z = Get-ChildItem signed -Recurse -Filter *.zip | Select-Object -First 1
+          if ($z) { Expand-Archive $z.FullName -DestinationPath signed\x -Force }
+          $exe = Get-ChildItem signed -Recurse -Filter SpectraLauncher.exe | Select-Object -First 1
+          if (-not $exe) { throw "Signed SpectraLauncher.exe not found in the SignPath output" }
+          Copy-Item $exe.FullName dist\SpectraLauncher.exe -Force
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/SpectraLauncher.exe -DestinationPath ${{ matrix.asset }}
 
       - name: Build disk image (macOS)
         if: runner.os == 'macOS'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_SIGN_ID: ${{ secrets.MACOS_SIGN_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           pyinstaller --noconfirm --windowed --icon icon.icns --osx-bundle-identifier com.spectralauncher.app --name SpectraLauncher fabric_launcher.py
           # Let macOS ask for microphone access on behalf of the launcher (needed for Simple Voice Chat etc.)
           PLIST=dist/SpectraLauncher.app/Contents/Info.plist
           /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string 'Spectra Launcher needs microphone access so mods like Simple Voice Chat can use your microphone.'" "$PLIST"
           /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'Spectra Launcher needs camera access for mods that use it.'" "$PLIST"
-          # Re-sign (ad-hoc) after editing the plist
-          codesign --force --deep --sign - dist/SpectraLauncher.app
+          # Sign: with your Developer ID certificate if the secrets exist, otherwise ad-hoc
+          if [ "$HAS_MAC_CERT" = "true" ]; then
+            echo "$MACOS_CERT_P12" | base64 --decode > cert.p12
+            security create-keychain -p ci build.keychain
+            security default-keychain -s build.keychain
+            security unlock-keychain -p ci build.keychain
+            security import cert.p12 -k build.keychain -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
+            codesign --force --deep --options runtime --timestamp --entitlements installer/entitlements.plist --sign "$MACOS_SIGN_ID" dist/SpectraLauncher.app
+          else
+            codesign --force --deep --sign - dist/SpectraLauncher.app
+          fi
           # Branded drag-to-Applications disk image
           brew install create-dmg
           mkdir dmg_root
@@ -67,6 +121,14 @@ jobs:
             --app-drop-link 495 210 --no-internet-enable \
             ${{ matrix.asset }} dmg_root \
           || { echo "create-dmg failed, using a plain disk image"; rm -f ${{ matrix.asset }}; ln -s /Applications dmg_root/Applications; hdiutil create -volname "Spectra Launcher" -srcfolder dmg_root -ov -format UDZO ${{ matrix.asset }}; }
+          # Sign and notarize the disk image (only with your Apple secrets)
+          if [ "$HAS_MAC_CERT" = "true" ]; then
+            codesign --force --timestamp --sign "$MACOS_SIGN_ID" ${{ matrix.asset }}
+          fi
+          if [ "$HAS_MAC_CERT" = "true" ] && [ "$HAS_NOTARY" = "true" ]; then
+            xcrun notarytool submit ${{ matrix.asset }} --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+            xcrun stapler staple ${{ matrix.asset }}
+          fi
 
       - name: Build (Linux)
         if: runner.os == 'Linux'
