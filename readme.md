@@ -20,7 +20,7 @@ Website: https://mcpacks-site.github.io/Spectra-launcher/
 
 Download the latest installer from the [Releases page](https://github.com/mcpacks-site/Spectra-launcher/releases):
 
-- **Windows** - run `SpectraLauncher-Setup.exe`. It installs for your user (no admin needed), adds a Start menu entry, and can add a desktop shortcut. Uninstall from Settings > Apps; your instances and worlds are kept. Windows SmartScreen may warn about an unrecognised publisher because the installer isn't code-signed yet: click **More info** then **Run anyway**.
+- **Windows** - unzip `SpectraLauncher-Windows.zip` and run `SpectraLauncher.exe`. No installation needed. Windows SmartScreen may warn about an unrecognised publisher because the app isn't code-signed yet: click **More info** then **Run anyway**.
 - **macOS** - open `SpectraLauncher.dmg` and drag Spectra Launcher into Applications. The app isn't notarized yet, so the first time, right-click it and choose **Open**.
 - **Linux** - unzip `SpectraLauncher-Linux.zip` and run `SpectraLauncher`.
 
