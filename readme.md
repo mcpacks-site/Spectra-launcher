@@ -13,6 +13,7 @@ Website: https://mcpacks-site.github.io/Spectra-launcher/
 - **Automatic setup** - downloads the game files, Fabric Loader, Fabric API and a matching Java runtime (Eclipse Temurin) if you don't have one
 - **Mod manager** - search Modrinth, install mods with their required dependencies, and enable, disable or remove them
 - **Custom cursors** - pick a pointer style for the launcher; optionally add the Cursors Extended mod to your instances for in-game pointers. On Windows the pointer can also be applied system-wide while the launcher is open.
+- **Skins** - upload a skin PNG (64x64, or the old 64x32 format) and apply it to your account, import the skin you already have, or design one in the built-in skin maker with a rotatable 3D preview. You can paint on the flat texture or directly on the 3D model.
 - **Your own account** - sign in with the Microsoft account that owns Minecraft: Java Edition. Only accounts that own the game can sign in and launch it. No license, authentication or safety checks are bypassed or disabled.
 
 ## Requirements
@@ -36,7 +37,8 @@ On some systems the command is `python3 fabric_launcher.py`.
 2. Click **Accounts**, then **Add Microsoft account**. A Microsoft page opens and the code is copied to your clipboard. Paste it in and sign in with the account that owns Minecraft.
 3. Click **Add instance**, choose a Minecraft version, and create it. Fabric API is installed automatically (you can turn this off).
 4. Select the instance and click **Launch** (or double-click it). The first launch downloads everything it needs, which can take a few minutes.
-5. Use **Edit / Mods** to change memory and Java settings, and to search for and install mods.
+5. Open **Skins** to upload a PNG or open the **Skin maker**, then click **Use this skin** to apply it to your signed-in account.
+6. Use **Edit / Mods** to change memory and Java settings, and to search for and install mods.
 
 ## Where your data is stored
 
@@ -58,6 +60,7 @@ Spectra Launcher runs entirely on your computer. The project runs no servers and
 - Fabric - to download the mod loader
 - Modrinth - to search for and download mods
 - Adoptium - to download Java if you don't have a suitable version
+- Mojang's skin servers (`api.minecraftservices.com`, `textures.minecraft.net`) - only when you apply or import a skin
 
 Sign-in uses Microsoft's standard device code flow with the scope `XboxLive.signin offline_access`. Your Microsoft password is never seen by the launcher. The full policy is on the [website](https://mcpacks-site.github.io/Spectra-launcher/#privacy).
 

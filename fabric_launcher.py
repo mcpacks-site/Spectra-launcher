@@ -872,6 +872,9 @@ def draw_icon(cv, kind, cx, cy, size, color, tag="icon"):
     elif kind == "plus":
         cv.create_line(cx - s * 0.6, cy, cx + s * 0.6, cy, fill=color, width=2, capstyle="round", tags=tag)
         cv.create_line(cx, cy - s * 0.6, cx, cy + s * 0.6, fill=color, width=2, capstyle="round", tags=tag)
+    elif kind == "skin":
+        rrect(cv, cx - s * 0.45, cy - s * 0.9, cx + s * 0.45, cy - s * 0.1, 3, fill="", outline=color, width=2, tags=tag)
+        rrect(cv, cx - s * 0.75, cy - s * 0.02, cx + s * 0.75, cy + s * 0.9, 3, fill="", outline=color, width=2, tags=tag)
     elif kind == "cursor":
         cv.create_polygon(cx - s * 0.55, cy - s * 0.8, cx - s * 0.55, cy + s * 0.7, cx - s * 0.15, cy + s * 0.35,
                           cx + s * 0.2, cy + s * 0.85, cx + s * 0.45, cy + s * 0.72, cx + s * 0.12, cy + s * 0.2,
@@ -2169,6 +2172,1127 @@ class CursorPage(tk.Frame):
 
 
 # --------------------------------------------------------------------------
+# Skins: PNG codec, skin model, 3D viewer
+# --------------------------------------------------------------------------
+import base64
+import binascii
+import struct
+import zlib
+
+TEMPLATE_B64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAC+ElEQVR4AexavYoUQRCu3UThLlLwFlZEUfEVLtfYQM0u8gnEn+gwMDDVdzBYzIwMFQzvAUwExR9c2BPTwzO5PWq4D5q6mqqZ673rnple+Kjuqa6vu76ug+6ZG5Pze//559LC/YfPlhYc+uRuVwBe4eaNy6SBjn7TjQlpOHJnbRoJkHUGkYsrAkQK2PnwUgGd38LIBBpVwM7X36QBc893F6QB/pzt+Pbi1dLC28VFsvDm5gWysP/tydJCanGqCtjcuEQasLirkzXSAP/atSukAf5z01ukAf6UthIg5QJSz91IgHtTIgYWy20G+l22jQTocoLe2hsJ8G5OxAAZtxnod9k2EqDLCXprrwTY2f1DGhD8Y7FHGuDf+/6LNMD/f/6FNMB/llbONf44eToK8fjvAwqxP3tBIWZ31kch1re3RyE+3d2iEB/+PaIQWy/HFEK+S5ALlH35bqJtvOSrKkA+xN0fz3HXR9+ziJcWceCTFn7PghfjwIN+G6sK0Iag62NVAXDuR3I456PvWcRLizjwSQu/Z8GLceBBv409dheQ5355zpfnenmPkPGyL/lmzw8oRFt+ySfjPTGqCsA9AINx7kcf53z0ca5Hvy4ePLAYX8cHXliMr+OHv44PfstWAlgD+u4rAvR9h738SgV4CvXdXyqg7zvs5VcqwFOo7/6qAvAuAMni7o8+7vro426Pfl08eGAxvo4PvLAYX8cPfx0f+z0cex8Q3vW5Hd71uX3++utRiPBdArc5xgJzhAi5tDZzhpDcIRe3JYcrgDeg7/7qT6DvSVr5FQEsdYbgKxUwhF22ciwVYKkzBF+pgCHsspVjqQBLnSH4SgUMYZetHHtXAVaymm/lAsR+v4+N15K0nq1cAJ4s9vt9bDyvoSlORYCmk+cw7lQEiP1+HxvfRthoAbz/D/C+38fGt0lWGxstAJPGfr+Pjec1nBQrEeCkk+cQVwTIYRdSrqFUQEr1c5i7VEAOu5ByDaUCUqqfw9wrqYDY7/cx8bEiHgIAAP//rCdZDQAAAAZJREFUAwCVozDeWe9Q4QAAAABJRU5ErkJggg=="
+SKIN_API = "https://api.minecraftservices.com/minecraft/profile"
+
+
+def png_decode(data):
+    """Decode an 8-bit, non-interlaced PNG into (width, height, RGBA bytearray)."""
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("That file is not a PNG image.")
+    pos, chunks, idat = 8, {}, []
+    while pos + 8 <= len(data):
+        ln, typ = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + ln]
+        pos += 12 + ln
+        if typ == b"IDAT":
+            idat.append(body)
+        else:
+            chunks.setdefault(typ, body)
+        if typ == b"IEND":
+            break
+    if b"IHDR" not in chunks:
+        raise ValueError("Damaged PNG file.")
+    w, h, depth, ctype, _comp, _flt, interlace = struct.unpack(">IIBBBBB", chunks[b"IHDR"])
+    if depth != 8 or interlace:
+        raise ValueError("Please re-save the PNG as a normal 8-bit, non-interlaced image.")
+    ch = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(ctype)
+    if not ch:
+        raise ValueError("Unsupported PNG type.")
+    raw = zlib.decompress(b"".join(idat))
+    stride = w * ch
+    out = bytearray(h * stride)
+    prev = bytearray(stride)
+    p = 0
+    for y in range(h):
+        ft = raw[p]
+        line = bytearray(raw[p + 1:p + 1 + stride])
+        p += 1 + stride
+        if ft == 1:
+            for i in range(ch, stride):
+                line[i] = (line[i] + line[i - ch]) & 255
+        elif ft == 2:
+            for i in range(stride):
+                line[i] = (line[i] + prev[i]) & 255
+        elif ft == 3:
+            for i in range(stride):
+                a = line[i - ch] if i >= ch else 0
+                line[i] = (line[i] + ((a + prev[i]) >> 1)) & 255
+        elif ft == 4:
+            for i in range(stride):
+                a = line[i - ch] if i >= ch else 0
+                b = prev[i]
+                c = prev[i - ch] if i >= ch else 0
+                pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+                pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                line[i] = (line[i] + pr) & 255
+        elif ft != 0:
+            raise ValueError("Damaged PNG file.")
+        out[y * stride:(y + 1) * stride] = line
+        prev = line
+    rgba = bytearray(w * h * 4)
+    pal = chunks.get(b"PLTE", b"")
+    trns = chunks.get(b"tRNS", b"")
+    for i in range(w * h):
+        o = i * ch
+        if ctype == 6:
+            px = out[o:o + 4]
+        elif ctype == 2:
+            px = bytes((out[o], out[o + 1], out[o + 2], 255))
+        elif ctype == 0:
+            px = bytes((out[o], out[o], out[o], 255))
+        elif ctype == 4:
+            px = bytes((out[o], out[o], out[o], out[o + 1]))
+        else:
+            k = out[o]
+            px = bytes((pal[3 * k], pal[3 * k + 1], pal[3 * k + 2], trns[k] if k < len(trns) else 255))
+        rgba[i * 4:i * 4 + 4] = px
+    return w, h, rgba
+
+
+def png_encode(w, h, rgba):
+    raw = bytearray()
+    for y in range(h):
+        raw.append(0)
+        raw += rgba[y * w * 4:(y + 1) * w * 4]
+
+    def chunk(t, d):
+        c = struct.pack(">I", len(d)) + t + d
+        return c + struct.pack(">I", binascii.crc32(t + d) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(bytes(raw), 9)) + chunk(b"IEND", b""))
+
+
+def blank_skin():
+    return bytearray(64 * 64 * 4)
+
+
+def _copy_flip(px, src, dst, w, h):
+    sx, sy = src
+    dx, dy = dst
+    for y in range(h):
+        for x in range(w):
+            s = ((sy + y) * 64 + sx + (w - 1 - x)) * 4
+            d = ((dy + y) * 64 + dx + x) * 4
+            px[d:d + 4] = px[s:s + 4]
+
+
+def skin_from_png(data):
+    """PNG bytes -> 64x64 RGBA bytearray. Old 64x32 skins are converted to the modern layout."""
+    w, h, rgba = png_decode(data)
+    if (w, h) == (64, 64):
+        return rgba
+    if (w, h) == (64, 32):
+        px = blank_skin()
+        px[:len(rgba)] = rgba
+        for (ox, oy), (nx, ny) in (((0, 16), (16, 48)), ((40, 16), (32, 48))):   # right limb -> left limb
+            _copy_flip(px, (ox + 4, oy), (nx + 4, ny), 4, 4)           # top
+            _copy_flip(px, (ox + 8, oy), (nx + 8, ny), 4, 4)           # bottom
+            _copy_flip(px, (ox + 8, oy + 4), (nx, ny + 4), 4, 12)      # left -> right
+            _copy_flip(px, (ox, oy + 4), (nx + 8, ny + 4), 4, 12)      # right -> left
+            _copy_flip(px, (ox + 4, oy + 4), (nx + 4, ny + 4), 4, 12)  # front
+            _copy_flip(px, (ox + 12, oy + 4), (nx + 12, ny + 4), 4, 12)  # back
+        return px
+    raise ValueError(f"Skins must be 64×64 (or old 64×32) pixels. This image is {w}×{h}.")
+
+
+def template_skin():
+    return skin_from_png(base64.b64decode(TEMPLATE_B64))
+
+
+# ---- model geometry --------------------------------------------------------
+def box_faces(u0, v0, w, h, d, pos, e, overlay):
+    """The six faces of a Minecraft skin box: (origin, U vec, V vec, tex rect, normal, overlay)."""
+    x0, y0, z0 = pos[0] - e, pos[1] - e, pos[2] - e
+    W, H, D = w + 2 * e, h + 2 * e, d + 2 * e
+    x1, y1, z1 = x0 + W, y0 + H, z0 + D
+    return [
+        ((x0, y1, z1), (W, 0, 0), (0, -H, 0), (u0 + d, v0 + d, w, h), (0, 0, 1), overlay),        # front
+        ((x1, y1, z0), (-W, 0, 0), (0, -H, 0), (u0 + 2 * d + w, v0 + d, w, h), (0, 0, -1), overlay),  # back
+        ((x0, y1, z0), (0, 0, D), (0, -H, 0), (u0, v0 + d, d, h), (-1, 0, 0), overlay),           # right side
+        ((x1, y1, z1), (0, 0, -D), (0, -H, 0), (u0 + d + w, v0 + d, d, h), (1, 0, 0), overlay),   # left side
+        ((x0, y1, z0), (W, 0, 0), (0, 0, D), (u0 + d, v0, w, d), (0, 1, 0), overlay),             # top
+        ((x0, y0, z1), (W, 0, 0), (0, 0, -D), (u0 + d + w, v0, w, d), (0, -1, 0), overlay),       # bottom
+    ]
+
+
+def skin_parts(slim):
+    aw = 3 if slim else 4
+    spec = [  # name, (u,v) base, (u,v) overlay, size, position
+        ("Head", (0, 0), (32, 0), (8, 8, 8), (-4, 24, -4), 0.5),
+        ("Body", (16, 16), (16, 32), (8, 12, 4), (-4, 12, -2), 0.25),
+        ("Right arm", (40, 16), (40, 32), (aw, 12, 4), (-4 - aw, 12, -2), 0.25),
+        ("Left arm", (32, 48), (48, 48), (aw, 12, 4), (4, 12, -2), 0.25),
+        ("Right leg", (0, 16), (0, 32), (4, 12, 4), (-4, 0, -2), 0.25),
+        ("Left leg", (16, 48), (0, 48), (4, 12, 4), (0, 0, -2), 0.25),
+    ]
+    parts = []
+    for name, uv, ouv, (w, h, d), pos, e in spec:
+        base = box_faces(uv[0], uv[1], w, h, d, pos, 0, False)
+        over = box_faces(ouv[0], ouv[1], w, h, d, pos, e, True)
+        center = (pos[0] + w / 2.0, pos[1] + h / 2.0, pos[2] + d / 2.0)
+        parts.append({"name": name, "base": base, "over": over, "center": center})
+    return parts
+
+
+FACE_LABELS = ("front", "back", "right", "left", "top", "bottom")
+
+
+def net_rects(slim):
+    """Texture rectangles for guides: (part, layer, label, x, y, w, h)."""
+    out = []
+    for p in skin_parts(slim):
+        for layer, faces in (("base", p["base"]), ("overlay", p["over"])):
+            for lab, f in zip(FACE_LABELS, faces):
+                out.append((p["name"], layer, lab) + tuple(f[3]))
+    return out
+
+
+_SHADES = {}
+
+
+def shade_hex(rgb, f):
+    q = max(0, min(40, int(f * 32)))
+    k = (rgb, q)
+    c = _SHADES.get(k)
+    if c is None:
+        c = "#%02x%02x%02x" % tuple(min(255, rgb[i] * q // 32) for i in range(3))
+        _SHADES[k] = c
+    return c
+
+
+class SkinView(tk.Canvas):
+    """A rotatable 3D player model drawn with textured quads (software rendering)."""
+
+    LIGHT = (-0.35, 0.75, 0.55)
+
+    def __init__(self, master, width=360, height=520, bg=None, on_paint=None):
+        super().__init__(master, width=width, height=height, bg=bg or C["card"], highlightthickness=0, bd=0,
+                         cursor="fleur")
+        self.px = template_skin()
+        self.slim, self.show_overlay = False, True
+        self.yaw, self.pitch, self.zoom = -0.55, 0.28, 1.0
+        self.auto, self.on_paint, self.paint_mode, self.paint_layer = False, on_paint, False, "base"
+        self.parts, self._runs, self._ver, self._job, self._drag = None, {}, 0, None, None
+        self._drawn = []
+        self.set_slim(False)
+        self.bind("<Configure>", lambda _e: self.redraw())
+        self.bind("<ButtonPress-1>", self._press)
+        self.bind("<B1-Motion>", self._move)
+        self.bind("<ButtonRelease-1>", self._release)
+        self.bind("<Double-Button-1>", lambda _e: self.reset())
+        self.bind("<MouseWheel>", lambda e: self._zoom(1.08 if e.delta > 0 else 1 / 1.08))
+        self.bind("<Button-4>", lambda _e: self._zoom(1.08))
+        self.bind("<Button-5>", lambda _e: self._zoom(1 / 1.08))
+        self._tick()
+
+    # ---- data
+    def set_slim(self, slim):
+        self.slim = bool(slim)
+        self.parts = skin_parts(self.slim)
+        self._runs.clear()
+        self.redraw()
+
+    def set_pixels(self, px, slim=None):
+        self.px = px
+        if slim is not None and bool(slim) != self.slim:
+            self.set_slim(slim)
+            return
+        self.invalidate()
+
+    def invalidate(self, *_):
+        self._runs.clear()
+        self.redraw()
+
+    def reset(self):
+        self.yaw, self.pitch, self.zoom = -0.55, 0.28, 1.0
+        self.redraw()
+
+    # ---- interaction
+    def _zoom(self, k):
+        self.zoom = max(0.5, min(3.0, self.zoom * k))
+        self.redraw()
+
+    def _press(self, e):
+        self._drag = (e.x, e.y, self.yaw, self.pitch)
+        if self.paint_mode:
+            self._paint_at(e, True)
+
+    def _move(self, e):
+        if not self._drag:
+            return
+        if self.paint_mode:
+            self._paint_at(e, False)
+            return
+        x0, y0, yaw0, pitch0 = self._drag
+        self.yaw = yaw0 + (e.x - x0) * 0.012
+        self.pitch = max(-1.45, min(1.45, pitch0 + (e.y - y0) * 0.012))
+        self.redraw()
+
+    def _release(self, _e):
+        self._drag = None
+        if self.paint_mode and self.on_paint:
+            self.on_paint(None, None, "end")
+
+    def _tick(self):
+        if self.auto and not self._drag and self.winfo_ismapped():
+            self.yaw += 0.018
+            self.redraw()
+        self.after(40, self._tick)
+
+    # ---- texture runs (horizontal spans of equal colour) per face
+    def _face_runs(self, face):
+        key = id(face)
+        r = self._runs.get(key)
+        if r is not None:
+            return r
+        tx, ty, tw, th = face[3]
+        px, runs = self.px, []
+        for j in range(th):
+            i = 0
+            while i < tw:
+                o = ((ty + j) * 64 + tx + i) * 4
+                if px[o + 3] < 128:
+                    i += 1
+                    continue
+                rgb = (px[o], px[o + 1], px[o + 2])
+                k = i + 1
+                while k < tw:
+                    o2 = ((ty + j) * 64 + tx + k) * 4
+                    if px[o2 + 3] < 128 or (px[o2], px[o2 + 1], px[o2 + 2]) != rgb:
+                        break
+                    k += 1
+                runs.append((i, k, j, rgb))
+                i = k
+        self._runs[key] = runs
+        return runs
+
+    # ---- rendering
+    def redraw(self):
+        if self._job is None:
+            self._job = self.after_idle(self.render)
+
+    def render(self):
+        self._job = None
+        cv = self
+        cv.delete("all")
+        w, h = max(cv.winfo_width(), 100), max(cv.winfo_height(), 100)
+        cy_, sy_ = math.cos(self.yaw), math.sin(self.yaw)
+        cp, sp = math.cos(self.pitch), math.sin(self.pitch)
+        scale = min(h / 40.0, w / 22.0) * self.zoom
+        cam = 95.0
+        cx, cyc = w / 2.0, h / 2.0 + 1.5 * scale
+
+        def rot(x, y, z):
+            y -= 16.0
+            x1, z1 = x * cy_ + z * sy_, -x * sy_ + z * cy_
+            y2, z2 = y * cp - z1 * sp, y * sp + z1 * cp
+            return x1, y2, z2
+
+        def proj(x, y, z):
+            x1, y2, z2 = rot(x, y, z)
+            k = cam / (cam - z2)
+            return cx + x1 * k * scale, cyc - y2 * k * scale
+
+        # ground shadow
+        sx0, sy0 = proj(-9, 0, 0)
+        sx1, _ = proj(9, 0, 0)
+        cv.create_oval(sx0 - 6, sy0 - 4 - 8 * self.zoom, sx1 + 6, sy0 + 10 * self.zoom, fill=mix(C["card"], "#000000", 0.35),
+                       outline="")
+        lx, ly, lz = self.LIGHT
+        ln = math.sqrt(lx * lx + ly * ly + lz * lz)
+        order = sorted(self.parts, key=lambda p: rot(*p["center"])[2])
+        self._drawn = []
+        for part in order:
+            groups = [part["base"]] + ([part["over"]] if self.show_overlay else [])
+            for faces in groups:
+                for face in faces:
+                    O, U, V, (tx, ty, tw, th), n, ov = face
+                    nx, ny, nz = rot(n[0], n[1] + 16.0, n[2])
+                    if nz <= 0.0:
+                        continue
+                    f = 0.60 + 0.40 * max(0.0, (nx * lx + ny * ly + nz * lz) / ln)
+                    p00 = proj(*O)
+                    p10 = proj(O[0] + U[0], O[1] + U[1], O[2] + U[2])
+                    p01 = proj(O[0] + V[0], O[1] + V[1], O[2] + V[2])
+                    p11 = proj(O[0] + U[0] + V[0], O[1] + U[1] + V[1], O[2] + U[2] + V[2])
+                    self._drawn.append((p00, p10, p01, p11, face))
+                    dxu, dyu = p10[0] - p00[0], p10[1] - p00[1]
+                    dxv, dyv = p01[0] - p00[0], p01[1] - p00[1]
+                    cxx, cyy = p11[0] - p10[0] - p01[0] + p00[0], p11[1] - p10[1] - p01[1] + p00[1]
+
+                    def pt(s, t):
+                        return (p00[0] + s * dxu + t * dxv + s * t * cxx, p00[1] + s * dyu + t * dyv + s * t * cyy)
+                    for (i0, i1, j, rgb) in self._face_runs(face):
+                        s0, s1, t0, t1 = i0 / tw, i1 / tw, j / th, (j + 1) / th
+                        a, b, c, d = pt(s0, t0), pt(s1, t0), pt(s1, t1), pt(s0, t1)
+                        col = shade_hex(rgb, f)
+                        cv.create_polygon(a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1], fill=col, outline=col)
+
+    # ---- painting on the model
+    def texel_at(self, x, y):
+        """Find (tx, ty) under a screen point on the visible face of the chosen layer."""
+        for p00, p10, p01, p11, face in reversed(self._drawn):
+            if (face[5] and self.paint_layer != "overlay") or (not face[5] and self.paint_layer != "base"):
+                continue
+            ux, uy = p10[0] - p00[0], p10[1] - p00[1]
+            vx, vy = p01[0] - p00[0], p01[1] - p00[1]
+            det = ux * vy - uy * vx
+            if abs(det) < 1e-6:
+                continue
+            qx, qy = x - p00[0], y - p00[1]
+            s = (qx * vy - qy * vx) / det
+            t = (ux * qy - uy * qx) / det
+            if 0 <= s < 1 and 0 <= t < 1:
+                tx, ty, tw, th = face[3]
+                return tx + int(s * tw), ty + int(t * th)
+        return None
+
+    def _paint_at(self, e, first):
+        if not self.on_paint:
+            return
+        t = self.texel_at(e.x, e.y)
+        if t:
+            self.on_paint(t[0], t[1], "start" if first else "move")
+
+
+# --------------------------------------------------------------------------
+# Skin library + Mojang skin API
+# --------------------------------------------------------------------------
+SKINS_DIR = ROOT / "skins"
+OVERLAY_NAMES = {"Head": "Hat", "Body": "Jacket", "Right arm": "Right sleeve", "Left arm": "Left sleeve",
+                 "Right leg": "Right pants", "Left leg": "Left pants"}
+
+
+def lib_load():
+    return load_json(SKINS_DIR / "library.json", {"skins": []}).get("skins", [])
+
+
+def lib_save(items):
+    SKINS_DIR.mkdir(parents=True, exist_ok=True)
+    save_json(SKINS_DIR / "library.json", {"skins": items})
+
+
+def lib_add(name, slim, px, entry=None):
+    items = lib_load()
+    if entry and any(i["id"] == entry["id"] for i in items):
+        e = next(i for i in items if i["id"] == entry["id"])
+        e.update(name=name, slim=bool(slim))
+    else:
+        base = re.sub(r"[^\w]+", "-", name).strip("-").lower() or "skin"
+        sid, n = base, 2
+        while (SKINS_DIR / f"{sid}.png").exists():
+            sid, n = f"{base}-{n}", n + 1
+        e = {"id": sid, "name": name, "slim": bool(slim)}
+        items.append(e)
+    SKINS_DIR.mkdir(parents=True, exist_ok=True)
+    (SKINS_DIR / f"{e['id']}.png").write_bytes(png_encode(64, 64, px))
+    lib_save(items)
+    return e
+
+
+def lib_px(entry):
+    return skin_from_png((SKINS_DIR / f"{entry['id']}.png").read_bytes())
+
+
+def lib_remove(entry):
+    (SKINS_DIR / f"{entry['id']}.png").unlink(missing_ok=True)
+    lib_save([i for i in lib_load() if i["id"] != entry["id"]])
+
+
+def skin_upload(token, png, variant):
+    """Change the skin of the signed-in Minecraft profile (multipart upload)."""
+    b = "----SpectraBoundary" + os.urandom(8).hex()
+    body = (f'--{b}\r\nContent-Disposition: form-data; name="variant"\r\n\r\n{variant}\r\n'
+            f'--{b}\r\nContent-Disposition: form-data; name="file"; filename="skin.png"\r\n'
+            f'Content-Type: image/png\r\n\r\n').encode() + png + f"\r\n--{b}--\r\n".encode()
+    req = urllib.request.Request(SKIN_API + "/skins", data=body, method="POST", headers={
+        "Authorization": f"Bearer {token}", "Content-Type": f"multipart/form-data; boundary={b}",
+        "User-Agent": UA, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", "replace")
+        msg = {400: "Mojang rejected the image (it must be a valid 64x64 skin PNG).",
+               401: "Your sign-in expired. Remove and re-add your account.",
+               403: "Mojang refused the change for this account.",
+               429: "Too many skin changes. Wait a minute and try again."}.get(e.code, f"Mojang returned {e.code}.")
+        raise IOError(f"{msg} {raw[:120] if e.code not in (400, 401, 403, 429) else ''}".strip())
+
+
+def account_skin(token):
+    """Download the skin currently on the account: (png bytes, slim?)."""
+    status, prof = http_json(SKIN_API, headers={"Authorization": f"Bearer {token}"})
+    if status != 200:
+        raise IOError("Could not read your profile from Mojang.")
+    sk = next((s for s in prof.get("skins", []) if s.get("state") == "ACTIVE"), None)
+    if not sk:
+        raise IOError("This account has no skin set.")
+    return http_get(sk["url"].replace("http://", "https://")), sk.get("variant", "CLASSIC").upper() == "SLIM"
+
+
+# --------------------------------------------------------------------------
+# Dialogs: skin info + skin maker
+# --------------------------------------------------------------------------
+class SkinInfoDialog(Dialog):
+    def __init__(self, app, name, slim, done):
+        super().__init__(app, "Add skin", 460, 360)
+        self.done = done
+        b = tk.Frame(self, bg=C["panel"])
+        b.pack(fill="both", expand=True, padx=30, pady=26)
+        lbl(b, "Add skin", 20, "bold").pack(anchor="w")
+        hint(b, "Give it a name and choose the arm style it was made for.", 400).pack(anchor="w", pady=(4, 18))
+        field_label(b, "Name").pack(anchor="w", pady=(0, 6))
+        self.name = tk.StringVar(value=name)
+        e = entry(b, self.name)
+        e.pack(fill="x")
+        e.entry.focus_set()
+        field_label(b, "Arm style").pack(anchor="w", pady=(16, 6))
+        self.slim = tk.BooleanVar(value=slim)
+        row = tk.Frame(b, bg=C["panel"])
+        row.pack(anchor="w")
+        self.b1 = Btn(row, "Classic (4px arms)", lambda: self.pick(False), h=36)
+        self.b2 = Btn(row, "Slim (3px arms)", lambda: self.pick(True), h=36)
+        self.b1.pack(side="left")
+        self.b2.pack(side="left", padx=8)
+        self.pick(slim)
+        btns = tk.Frame(b, bg=C["panel"])
+        btns.pack(side="bottom", fill="x")
+        Btn(btns, "Add & use", lambda: self.ok(True), "primary", h=42).pack(side="right")
+        Btn(btns, "Just add", lambda: self.ok(False), "secondary", h=42).pack(side="right", padx=(0, 8))
+        Btn(btns, "Cancel", self.destroy, "ghost", h=42).pack(side="left")
+
+    def pick(self, slim):
+        self.slim.set(slim)
+        self.b1.style, self.b2.style = ("secondary", "primary") if slim else ("primary", "secondary")
+        self.b1.draw()
+        self.b2.draw()
+
+    def ok(self, apply):
+        self.done(self.name.get().strip() or "My skin", self.slim.get(), apply)
+        self.destroy()
+
+
+class SkinMaker(Dialog):
+    Z = 8   # 2D zoom (pixels per texel)
+    PALETTE = ["#000000", "#3a3a3a", "#7a7a7a", "#bdbdbd", "#ffffff", "#7b4a2a", "#c98b62", "#f1c7a4",
+               "#ff5d73", "#ff8a3d", "#ffd23d", "#46e08a", "#2cc7b5", "#38a8ff", "#5b6cff", "#a66bff",
+               "#e05cc0", "#8a1f2d", "#1f6b3a", "#1f3a8a"]
+
+    def __init__(self, app, px=None, slim=False, name="My skin", entry=None):
+        super().__init__(app, "Skin maker", 1300, 840)
+        self.px = bytearray(px) if px else template_skin()
+        self.slim, self.name, self.entry = bool(slim), tk.StringVar(value=name), entry
+        self.tool, self.size, self.color = "pencil", 1, "#46e08a"
+        self.undo, self.redo, self._last, self._stroke = [], [], None, False
+        self.show_grid, self.show_guides = tk.BooleanVar(value=True), tk.BooleanVar(value=True)
+        self.v_over, self.v_auto, self.v_paint3d = tk.BooleanVar(value=True), tk.BooleanVar(value=False), tk.BooleanVar(value=False)
+        self.layer = "base"
+        self.build()
+        self.refresh_all()
+        self.bind("<Escape>", lambda _e: self.close())
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        for seq, fn in (("<Control-z>", self.do_undo), ("<Command-z>", self.do_undo), ("<Control-y>", self.do_redo),
+                        ("<Control-Shift-Z>", self.do_redo), ("<Command-Shift-Z>", self.do_redo)):
+            self.bind(seq, lambda _e, f=fn: f())
+        for key, tool in (("b", "pencil"), ("e", "eraser"), ("g", "fill"), ("i", "picker")):
+            self.bind(key, lambda _e, t=tool: self.set_tool(t))
+
+    def close(self):
+        self.view.auto = False
+        self.destroy()
+
+    # ---- layout
+    def build(self):
+        root = tk.Frame(self, bg=C["panel"])
+        root.pack(fill="both", expand=True, padx=24, pady=20)
+        root.grid_columnconfigure(1, weight=1)
+        root.grid_rowconfigure(0, weight=1)
+
+        # left: tools
+        left = tk.Frame(root, bg=C["panel"], width=250)
+        left.grid(row=0, column=0, sticky="ns", padx=(0, 22))
+        left.pack_propagate(False)
+        lbl(left, "Skin maker", 20, "bold").pack(anchor="w")
+        hint(left, "Paint on the flat skin or directly on the 3D model.", 240).pack(anchor="w", pady=(2, 14))
+        field_label(left, "Name").pack(anchor="w", pady=(0, 5))
+        entry(left, self.name, width=18).pack(fill="x")
+        field_label(left, "Tool").pack(anchor="w", pady=(16, 6))
+        tools = tk.Frame(left, bg=C["panel"])
+        tools.pack(anchor="w")
+        self.tool_btns = {}
+        for i, (t, label) in enumerate((("pencil", "Pencil"), ("eraser", "Eraser"), ("fill", "Fill"), ("picker", "Picker"))):
+            b = Btn(tools, label, lambda t=t: self.set_tool(t), "secondary", w=56, h=34, size=8)
+            b.grid(row=0, column=i, padx=(0, 4))
+            self.tool_btns[t] = b
+        field_label(left, "Brush size").pack(anchor="w", pady=(14, 6))
+        sizes = tk.Frame(left, bg=C["panel"])
+        sizes.pack(anchor="w")
+        self.size_btns = {}
+        for i, s in enumerate((1, 2, 3, 4)):
+            b = Btn(sizes, f"{s}", lambda s=s: self.set_size(s), "secondary", w=42, h=32)
+            b.grid(row=0, column=i, padx=(0, 4))
+            self.size_btns[s] = b
+        field_label(left, "Colour").pack(anchor="w", pady=(14, 6))
+        cr = tk.Frame(left, bg=C["panel"])
+        cr.pack(fill="x")
+        self.swatch = tk.Canvas(cr, width=44, height=44, bg=C["panel"], highlightthickness=0, bd=0, cursor="hand2")
+        self.swatch.pack(side="left")
+        self.swatch.bind("<Button-1>", lambda _e: self.choose_color())
+        self.hex = tk.StringVar(value=self.color)
+        he = entry(cr, self.hex, width=9)
+        he.pack(side="left", padx=8)
+        he.entry.bind("<Return>", lambda _e: self.set_color(self.hex.get()))
+        Btn(cr, "Pick…", self.choose_color, "secondary", h=36, w=58).pack(side="left")
+        pal = tk.Canvas(left, width=240, height=70, bg=C["panel"], highlightthickness=0, bd=0)
+        pal.pack(anchor="w", pady=(10, 0))
+        for i, c in enumerate(self.PALETTE):
+            x, y = (i % 10) * 24, (i // 10) * 28
+            pal.create_rectangle(x + 1, y + 1, x + 22, y + 24, fill=c, outline=C["line2"], tags=("sw",))
+        pal.bind("<Button-1>", lambda e: self._pal(e))
+        field_label(left, "Edit").pack(anchor="w", pady=(14, 6))
+        er = tk.Frame(left, bg=C["panel"])
+        er.pack(anchor="w")
+        Btn(er, "Undo", self.do_undo, h=34, w=70, size=9).pack(side="left")
+        Btn(er, "Redo", self.do_redo, h=34, w=70, size=9).pack(side="left", padx=6)
+        Btn(er, "Clear", self.do_clear, "danger", h=34, w=62, size=9).pack(side="left")
+        field_label(left, "File").pack(anchor="w", pady=(14, 6))
+        fr = tk.Frame(left, bg=C["panel"])
+        fr.pack(anchor="w")
+        Btn(fr, "Template", self.do_template, h=34, w=76, size=9).pack(side="left")
+        Btn(fr, "Open…", self.do_open, h=34, w=68, size=9).pack(side="left", padx=6)
+        Btn(fr, "Save…", self.do_save, h=34, w=68, size=9).pack(side="left")
+        bottom = tk.Frame(left, bg=C["panel"])
+        bottom.pack(side="bottom", fill="x")
+        Btn(bottom, "Apply to my account", self.do_apply, "secondary", h=40, w=240).pack(pady=(0, 8))
+        Btn(bottom, "Save to my skins", self.do_library, "primary", h=44, w=240).pack()
+        self.set_tool("pencil")
+        self.set_size(1)
+        self.set_color(self.color)
+
+        # middle: 2D editor
+        mid = tk.Frame(root, bg=C["panel"])
+        mid.grid(row=0, column=1, sticky="n")
+        top = tk.Frame(mid, bg=C["panel"])
+        top.pack(fill="x", pady=(0, 8))
+        lbl(top, "SKIN TEXTURE  64 × 64", 8, "bold", C["dim"]).pack(side="left")
+        for var, text in ((self.show_guides, "Guides"), (self.show_grid, "Grid")):
+            r = tk.Frame(top, bg=C["panel"])
+            r.pack(side="right", padx=(14, 0))
+            lbl(r, text, 9, color=C["muted"]).pack(side="left", padx=(0, 6))
+            Switch(r, var, command=self.draw_overlays).pack(side="left")
+        n = 64 * self.Z
+        frame = tk.Frame(mid, bg=C["line"], padx=1, pady=1)
+        frame.pack()
+        self.cv = tk.Canvas(frame, width=n, height=n, bg="#1a2420", highlightthickness=0, bd=0, cursor="crosshair")
+        self.cv.pack()
+        self.disp = tk.PhotoImage(master=self, width=64, height=64)
+        self.zoomed = self.disp.zoom(self.Z)
+        self.img_item = self.cv.create_image(0, 0, anchor="nw", image=self.zoomed)
+        self.cv.bind("<ButtonPress-1>", self._down)
+        self.cv.bind("<B1-Motion>", self._drag)
+        self.cv.bind("<ButtonRelease-1>", self._up)
+        self.cv.bind("<Motion>", self._hover)
+        self.coord = lbl(mid, "Click or drag to paint. Pencil B · Eraser E · Fill G · Picker I · Undo Ctrl/Cmd+Z", 9,
+                         color=C["dim"], wraplength=n)
+        self.coord.pack(anchor="w", pady=(8, 0))
+
+        # right: 3D
+        right = tk.Frame(root, bg=C["panel"], width=440)
+        right.grid(row=0, column=2, sticky="ns", padx=(22, 0))
+        right.pack_propagate(False)
+        head = tk.Frame(right, bg=C["panel"])
+        head.pack(fill="x", pady=(0, 8))
+        lbl(head, "3D PREVIEW  ·  drag to rotate", 8, "bold", C["dim"]).pack(side="left")
+        Btn(head, "Reset view", lambda: self.view.reset(), "ghost", h=28, size=8, w=80).pack(side="right")
+        self.view = SkinView(right, width=440, height=520, bg="#12181a", on_paint=self.model_paint)
+        self.view.pack()
+        self.view.set_pixels(self.px, self.slim)
+        ctl = tk.Frame(right, bg=C["panel"])
+        ctl.pack(fill="x", pady=(10, 0))
+        row = tk.Frame(ctl, bg=C["panel"])
+        row.pack(fill="x")
+        self.b_classic = Btn(row, "Classic arms", lambda: self.set_slim(False), h=32, size=9)
+        self.b_slim = Btn(row, "Slim arms", lambda: self.set_slim(True), h=32, size=9)
+        self.b_classic.pack(side="left")
+        self.b_slim.pack(side="left", padx=6)
+        self.set_slim(self.slim)
+        for var, text, cmd in ((self.v_over, "Show outer layer", self.sync_view), (self.v_auto, "Auto-rotate", self.sync_view),
+                               (self.v_paint3d, "Paint on the model", self.sync_view)):
+            r = tk.Frame(ctl, bg=C["panel"])
+            r.pack(fill="x", pady=(8, 0))
+            lbl(r, text, 10, color=C["text"]).pack(side="left")
+            Switch(r, var, command=cmd).pack(side="right")
+        lr = tk.Frame(ctl, bg=C["panel"])
+        lr.pack(fill="x", pady=(8, 0))
+        lbl(lr, "Model paints on layer", 9, color=C["muted"]).pack(side="left")
+        self.l_over = Btn(lr, "Outer", lambda: self.set_layer("overlay"), h=28, w=60, size=8)
+        self.l_base = Btn(lr, "Base", lambda: self.set_layer("base"), h=28, w=60, size=8)
+        self.l_over.pack(side="right")
+        self.l_base.pack(side="right", padx=6)
+        self.set_layer("base")
+
+    # ---- state helpers
+    def set_tool(self, t):
+        self.tool = t
+        for k, b in self.tool_btns.items():
+            b.style = "primary" if k == t else "secondary"
+            b.draw()
+
+    def set_size(self, s):
+        self.size = s
+        for k, b in self.size_btns.items():
+            b.style = "primary" if k == s else "secondary"
+            b.draw()
+
+    def set_color(self, c):
+        try:
+            hex_rgb(c)
+            if len(c) != 7:
+                raise ValueError
+        except Exception:  # noqa: BLE001
+            self.hex.set(self.color)
+            return
+        self.color = c.lower()
+        self.hex.set(self.color)
+        sw = self.swatch
+        sw.delete("all")
+        rrect(sw, 2, 2, 42, 42, 10, fill=self.color, outline=C["line2"], width=2)
+
+    def choose_color(self):
+        from tkinter import colorchooser
+        rgb, hx = colorchooser.askcolor(color=self.color, parent=self, title="Choose a colour")
+        if hx:
+            self.set_color(hx)
+
+    def _pal(self, e):
+        i = (e.y // 28) * 10 + e.x // 24
+        if 0 <= i < len(self.PALETTE) and e.x % 24 < 23:
+            self.set_color(self.PALETTE[i])
+
+    def set_slim(self, slim):
+        self.slim = bool(slim)
+        self.b_classic.style, self.b_slim.style = ("secondary", "primary") if self.slim else ("primary", "secondary")
+        self.b_classic.draw()
+        self.b_slim.draw()
+        if hasattr(self, "view"):
+            self.view.set_slim(self.slim)
+            self.draw_overlays()
+
+    def set_layer(self, layer):
+        self.layer = layer
+        self.l_base.style, self.l_over.style = ("primary", "secondary") if layer == "base" else ("secondary", "primary")
+        self.l_base.draw()
+        self.l_over.draw()
+        if hasattr(self, "view"):
+            self.view.paint_layer = layer
+
+    def sync_view(self):
+        v = self.view
+        v.show_overlay, v.auto, v.paint_mode = self.v_over.get(), self.v_auto.get(), self.v_paint3d.get()
+        v.config(cursor="crosshair" if v.paint_mode else "fleur")
+        v.redraw()
+
+    # ---- drawing the 2D editor
+    def texel_color(self, x, y):
+        o = (y * 64 + x) * 4
+        p = self.px
+        if p[o + 3] >= 128:
+            return "#%02x%02x%02x" % (p[o], p[o + 1], p[o + 2])
+        return "#2f3a35" if (x + y) % 2 else "#27312d"
+
+    def refresh_all(self):
+        rows = ["{" + " ".join(self.texel_color(x, y) for x in range(64)) + "}" for y in range(64)]
+        self.disp.put(" ".join(rows), to=(0, 0))
+        self.zoomed = self.disp.zoom(self.Z)
+        self.cv.itemconfigure(self.img_item, image=self.zoomed)
+        self.draw_overlays()
+        self.view.set_pixels(self.px, self.slim)
+
+    def draw_overlays(self):
+        cv, Z = self.cv, self.Z
+        cv.delete("ov")
+        if self.show_guides.get():
+            for part, layer, lab, x, y, w, h in net_rects(self.slim):
+                col = "#46e08a" if layer == "base" else "#ffa94d"
+                cv.create_rectangle(x * Z, y * Z, (x + w) * Z, (y + h) * Z, outline=col, tags="ov")
+            for part, layer, lab, x, y, w, h in net_rects(self.slim):
+                if lab == "front":
+                    nm = part if layer == "base" else OVERLAY_NAMES[part]
+                    cv.create_text(x * Z + 3, y * Z + 2, text=nm, anchor="nw", tags="ov", font=font(7, "bold"),
+                                   fill="#46e08a" if layer == "base" else "#ffa94d")
+        if self.show_grid.get():
+            for i in range(0, 65):
+                col = "#3b4a43" if i % 8 == 0 else "#27342e"
+                cv.create_line(i * Z, 0, i * Z, 64 * Z, fill=col, tags="ov")
+                cv.create_line(0, i * Z, 64 * Z, i * Z, fill=col, tags="ov")
+
+    # ---- painting
+    def _tex(self, e):
+        return max(0, min(63, e.x // self.Z)), max(0, min(63, e.y // self.Z))
+
+    def _hover(self, e):
+        x, y = self._tex(e)
+        o = (y * 64 + x) * 4
+        a = self.px[o + 3]
+        self.coord.config(text=f"x {x}  y {y}   " + ("transparent" if a < 128 else "#%02x%02x%02x" % tuple(self.px[o:o + 3])))
+
+    def snapshot(self):
+        self.undo.append(bytes(self.px))
+        if len(self.undo) > 80:
+            self.undo.pop(0)
+        self.redo.clear()
+
+    def _down(self, e):
+        self._stroke = True
+        self.snapshot()
+        x, y = self._tex(e)
+        self.apply(x, y, first=True)
+
+    def _drag(self, e):
+        if self._stroke:
+            x, y = self._tex(e)
+            self.apply(x, y, first=False)
+
+    def _up(self, _e):
+        self._stroke, self._last = False, None
+        self.view.set_pixels(self.px, self.slim)
+
+    def model_paint(self, x, y, phase):
+        if phase == "end":
+            self._stroke, self._last = False, None
+            return
+        if phase == "start":
+            self.snapshot()
+            self._stroke = True
+        self.apply(x, y, first=(phase == "start"))
+
+    def apply(self, x, y, first):
+        tool = self.tool
+        if tool == "picker":
+            o = (y * 64 + x) * 4
+            if self.px[o + 3] >= 128:
+                self.set_color("#%02x%02x%02x" % tuple(self.px[o:o + 3]))
+                self.set_tool("pencil")
+            return
+        if tool == "fill":
+            if first:
+                self.flood(x, y)
+            return
+        pts = [(x, y)]
+        if self._last and self._last != (x, y):
+            pts = self._line(self._last, (x, y))
+        self._last = (x, y)
+        rgba = (0, 0, 0, 0) if tool == "eraser" else hex_rgb(self.color) + (255,)
+        s = self.size
+        for (px_, py_) in pts:
+            for dy in range(s):
+                for dx in range(s):
+                    tx, ty = px_ + dx - (s - 1) // 2, py_ + dy - (s - 1) // 2
+                    if 0 <= tx < 64 and 0 <= ty < 64:
+                        o = (ty * 64 + tx) * 4
+                        self.px[o:o + 4] = bytes(rgba)
+                        self.disp.put(self.texel_color(tx, ty), to=(tx, ty))
+        self.zoomed = self.disp.zoom(self.Z)
+        self.cv.itemconfigure(self.img_item, image=self.zoomed)
+        self.view.invalidate()
+
+    @staticmethod
+    def _line(a, b):
+        (x0, y0), (x1, y1) = a, b
+        dx, dy = abs(x1 - x0), -abs(y1 - y0)
+        sx, sy = (1 if x0 < x1 else -1), (1 if y0 < y1 else -1)
+        err, out = dx + dy, []
+        while True:
+            out.append((x0, y0))
+            if (x0, y0) == (x1, y1):
+                return out
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x0 += sx
+            if e2 <= dx:
+                err += dx
+                y0 += sy
+
+    def flood(self, x, y):
+        rect = next(((rx, ry, rw, rh) for _p, _l, _lab, rx, ry, rw, rh in net_rects(self.slim)
+                     if rx <= x < rx + rw and ry <= y < ry + rh), None)
+        if not rect:
+            return
+        rx, ry, rw, rh = rect
+        o = (y * 64 + x) * 4
+        target = bytes(self.px[o:o + 4])
+        new = hex_rgb(self.color) + (255,)
+        if target == bytes(new):
+            return
+        stack = [(x, y)]
+        while stack:
+            cx, cy = stack.pop()
+            if not (rx <= cx < rx + rw and ry <= cy < ry + rh):
+                continue
+            o = (cy * 64 + cx) * 4
+            if bytes(self.px[o:o + 4]) != target:
+                continue
+            self.px[o:o + 4] = bytes(new)
+            stack += [(cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)]
+        self.refresh_all()
+
+    # ---- edit / file actions
+    def do_undo(self):
+        if self.undo:
+            self.redo.append(bytes(self.px))
+            self.px[:] = self.undo.pop()
+            self.refresh_all()
+
+    def do_redo(self):
+        if self.redo:
+            self.undo.append(bytes(self.px))
+            self.px[:] = self.redo.pop()
+            self.refresh_all()
+
+    def do_clear(self):
+        if messagebox.askyesno("Clear skin", "Erase the whole skin?", parent=self):
+            self.snapshot()
+            self.px[:] = bytes(64 * 64 * 4)
+            self.refresh_all()
+
+    def do_template(self):
+        self.snapshot()
+        self.px[:] = template_skin()
+        self.refresh_all()
+
+    def do_open(self):
+        p = filedialog.askopenfilename(parent=self, title="Open a skin PNG", filetypes=[("PNG image", "*.png")])
+        if not p:
+            return
+        try:
+            px = skin_from_png(Path(p).read_bytes())
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror("Open skin", str(e), parent=self)
+            return
+        self.snapshot()
+        self.px[:] = px
+        self.name.set(Path(p).stem)
+        self.refresh_all()
+
+    def do_save(self):
+        p = filedialog.asksaveasfilename(parent=self, title="Save skin as PNG", defaultextension=".png",
+                                         initialfile=f"{self.name.get() or 'skin'}.png", filetypes=[("PNG image", "*.png")])
+        if p:
+            Path(p).write_bytes(png_encode(64, 64, self.px))
+            self.app.toast("Skin saved")
+
+    def do_library(self):
+        self.entry = lib_add(self.name.get().strip() or "My skin", self.slim, self.px, self.entry)
+        self.app.pages["skins"].reload(select=self.entry["id"])
+        self.app.toast("Saved to your skins")
+
+    def do_apply(self):
+        self.app.apply_skin(bytearray(self.px), self.slim)
+
+
+# --------------------------------------------------------------------------
+# Skins page
+# --------------------------------------------------------------------------
+class SkinsPage(tk.Frame):
+    PAD, TW, TH, GAP = 32, 132, 150, 14
+
+    def __init__(self, master, app):
+        super().__init__(master, bg=C["bg"])
+        self.app = app
+        self.items, self.sel, self.hover, self.hit = [], None, None, []
+        _, right, _ = app.header(self, "Skins", "Change your look. Upload a PNG or design one in the skin maker.")
+        Btn(right, "Skin maker", self.new_maker, "primary", h=42).pack(side="right")
+        Btn(right, "Upload PNG", self.upload, "secondary", h=42).pack(side="right", padx=(0, 10))
+        body = tk.Frame(self, bg=C["bg"])
+        body.pack(fill="both", expand=True, padx=32, pady=(6, 20))
+        body.grid_columnconfigure(1, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+        card = Card(body, height=400)
+        card.grid(row=0, column=0, sticky="ns", padx=(0, 20))
+        card.config(width=330)
+        card.grid_propagate(False)
+        b = card.body
+        self.view = SkinView(b, width=290, height=330, bg=C["card"])
+        self.view.pack()
+        self.view.auto = True
+        self.name_lbl = lbl(b, "No skin selected", 13, "bold", bg=C["card"])
+        self.name_lbl.pack(anchor="w", pady=(8, 0))
+        self.meta_lbl = lbl(b, "Drag the model to rotate it.", 9, color=C["muted"], bg=C["card"])
+        self.meta_lbl.pack(anchor="w")
+        row = tk.Frame(b, bg=C["card"])
+        row.pack(side="bottom", fill="x")
+        self.b_apply = Btn(row, "Use this skin", self.apply, "primary", h=40, bg=C["card"], w=262)
+        self.b_apply.pack(pady=(0, 6))
+        r2 = tk.Frame(row, bg=C["card"])
+        r2.pack(fill="x")
+        self.b_edit = Btn(r2, "Edit", self.edit, "secondary", h=34, w=84, bg=C["card"])
+        self.b_edit.pack(side="left")
+        self.b_del = Btn(r2, "Delete", self.delete, "danger", h=34, w=84, bg=C["card"])
+        self.b_del.pack(side="left", padx=6)
+        self.b_imp = Btn(r2, "Import", self.import_account, "secondary", h=34, w=84, bg=C["card"])
+        self.b_imp.pack(side="left")
+        wrap = tk.Frame(body, bg=C["bg"])
+        wrap.grid(row=0, column=1, sticky="nsew")
+        lbl(wrap, "MY SKINS", 8, "bold", C["dim"], bg=C["bg"]).pack(anchor="w", pady=(0, 8))
+        self.cv = tk.Canvas(wrap, bg=C["bg"], highlightthickness=0, bd=0)
+        self.cv.pack(fill="both", expand=True)
+        self.cv.bind("<Configure>", lambda _e: self.draw())
+        self.cv.bind("<Motion>", self._motion)
+        self.cv.bind("<Leave>", lambda _e: self._set_hover(None))
+        self.cv.bind("<Button-1>", self._click)
+        self.cv.bind("<Double-Button-1>", lambda _e: self.apply())
+        self.reload()
+
+    # ---- data
+    def reload(self, select=None):
+        self.items = lib_load()
+        if select:
+            self.sel = select
+        if self.sel not in [i["id"] for i in self.items]:
+            self.sel = self.items[0]["id"] if self.items else None
+        self.show_selected()
+        self.draw()
+
+    def current(self):
+        return next((i for i in self.items if i["id"] == self.sel), None)
+
+    def show_selected(self):
+        e = self.current()
+        for b in (self.b_apply, self.b_edit, self.b_del):
+            b.set_enabled(bool(e))
+        if not e:
+            self.name_lbl.config(text="No skin yet")
+            self.meta_lbl.config(text="Upload a PNG or open the skin maker.")
+            self.view.set_pixels(template_skin(), False)
+            return
+        try:
+            self.view.set_pixels(lib_px(e), e["slim"])
+        except Exception:  # noqa: BLE001
+            self.view.set_pixels(template_skin(), False)
+        self.name_lbl.config(text=e["name"])
+        self.meta_lbl.config(text=("Slim" if e["slim"] else "Classic") + " arms  ·  drag to rotate")
+
+    # ---- drawing the library grid
+    def draw(self):
+        cv = self.cv
+        cv.delete("all")
+        self.hit = []
+        w = max(cv.winfo_width(), 300)
+        TW, TH, G = self.TW, self.TH, self.GAP
+        cols = max(1, (w + G) // (TW + G))
+        if not self.items:
+            cv.create_text(4, 10, anchor="nw", fill=C["muted"], font=font(10),
+                           text="Your skins will appear here.\nClick “Upload PNG” or “Skin maker” to add one.")
+            return
+        for n, e in enumerate(self.items):
+            x, y = (n % cols) * (TW + G), (n // cols) * (TH + G)
+            sel, hov = e["id"] == self.sel, e["id"] == self.hover
+            rrect(cv, x, y, x + TW, y + TH, 14, fill=C["card2"] if (sel or hov) else C["card"],
+                  outline=C["accent"] if sel else (C["line2"] if hov else C["line"]), width=2 if sel else 1)
+            try:
+                px = lib_px(e)
+                self.draw_head(cv, px, x + (TW - 64) // 2, y + 14, 8)
+            except Exception:  # noqa: BLE001
+                pass
+            cv.create_text(x + TW // 2, y + TH - 30, text=fit_text(e["name"], font(10, "bold"), TW - 20),
+                           fill=C["text"], font=font(10, "bold"))
+            cv.create_text(x + TW // 2, y + TH - 14, text="Slim" if e["slim"] else "Classic", fill=C["dim"], font=font(8))
+            self.hit.append((x, y, x + TW, y + TH, e["id"]))
+
+    @staticmethod
+    def draw_head(cv, px, x0, y0, z):
+        for (u, v, k) in ((8, 8, 0), (40, 8, 1)):
+            for j in range(8):
+                for i in range(8):
+                    o = ((v + j) * 64 + u + i) * 4
+                    if px[o + 3] >= 128:
+                        c = "#%02x%02x%02x" % (px[o], px[o + 1], px[o + 2])
+                        cv.create_rectangle(x0 + i * z - k * 0, y0 + j * z, x0 + i * z + z, y0 + j * z + z,
+                                            fill=c, outline=c)
+
+    def _at(self, e):
+        return next((h[4] for h in self.hit if h[0] <= e.x <= h[2] and h[1] <= e.y <= h[3]), None)
+
+    def _motion(self, e):
+        self._set_hover(self._at(e))
+
+    def _set_hover(self, sid):
+        if sid != self.hover:
+            self.hover = sid
+            self.cv.config(cursor="hand2" if sid else "")
+            self.draw()
+
+    def _click(self, e):
+        sid = self._at(e)
+        if sid:
+            self.sel = sid
+            self.show_selected()
+            self.draw()
+
+    # ---- actions
+    def new_maker(self):
+        SkinMaker(self.app)
+
+    def edit(self):
+        e = self.current()
+        if e:
+            SkinMaker(self.app, lib_px(e), e["slim"], e["name"], e)
+
+    def delete(self):
+        e = self.current()
+        if e and messagebox.askyesno("Delete skin", f"Delete “{e['name']}” from your skins?", parent=self.app.root):
+            lib_remove(e)
+            self.reload()
+
+    def apply(self):
+        e = self.current()
+        if e:
+            self.app.apply_skin(bytearray(lib_px(e)), e["slim"])
+
+    def upload(self):
+        p = filedialog.askopenfilename(parent=self.app.root, title="Choose a skin PNG", filetypes=[("PNG image", "*.png")])
+        if not p:
+            return
+        try:
+            px = skin_from_png(Path(p).read_bytes())
+        except Exception as ex:  # noqa: BLE001
+            messagebox.showerror("Upload skin", str(ex), parent=self.app.root)
+            return
+        self.add_dialog(Path(p).stem, False, px)
+
+    def add_dialog(self, name, slim, px):
+        def done(n, s, apply):
+            e = lib_add(n, s, px)
+            self.reload(select=e["id"])
+            if apply:
+                self.app.apply_skin(bytearray(px), s)
+        SkinInfoDialog(self.app, name, slim, done)
+
+    def import_account(self):
+        acct = self.app.current_account()
+        if not acct or acct.get("type") != "msa":
+            self.app.toast("Sign in with a Microsoft account first", "err")
+            return
+
+        def work():
+            a = self.app.fresh_account(acct)
+            png, slim = account_skin(a["access_token"])
+            return skin_from_png(png), slim
+        self.app.bg(work, ok=lambda r: self.add_dialog(acct["username"], r[1], r[0]),
+                    fail=lambda e: self.app.toast(str(e), "err"))
+
+
+# --------------------------------------------------------------------------
 # Main window
 # --------------------------------------------------------------------------
 WINDOW_TITLE = APP_NAME
@@ -2244,7 +3368,7 @@ class App:
         nav.pack(fill="x", padx=12, pady=(6, 0))
         self.nav = {}
         for key, text, icon in (("instances", "Instances", "grid"), ("accounts", "Accounts", "user"),
-                                ("cursor", "Cursor", "cursor"), ("console", "Console", "term"), ("about", "About", "info")):
+                                ("skins", "Skins", "skin"), ("cursor", "Cursor", "cursor"), ("console", "Console", "term"), ("about", "About", "info")):
             n = NavItem(nav, text, icon, lambda k=key: self.show_page(k))
             n.pack(fill="x", pady=2)
             self.nav[key] = n
@@ -2268,6 +3392,7 @@ class App:
         self.pages = {}
         self.pages["instances"] = self.build_instances(holder)
         self.pages["accounts"] = AccountsPage(holder, self)
+        self.pages["skins"] = SkinsPage(holder, self)
         self.pages["cursor"] = CursorPage(holder, self)
         self.pages["console"] = self.build_console(holder)
         self.pages["about"] = self.build_about(holder)
@@ -2371,6 +3496,21 @@ class App:
             self.logbox.see("end")
         if name == "cursor":
             self.pages["cursor"].draw()
+
+    # ---- skins
+    def apply_skin(self, px, slim):
+        acct = self.current_account()
+        if not acct or acct.get("type") != "msa":
+            self.toast("Sign in with a Microsoft account to change your skin", "err")
+            return
+        png = png_encode(64, 64, px)
+        self.toast("Uploading skin…")
+
+        def work():
+            a = self.fresh_account(acct)
+            skin_upload(a["access_token"], png, "slim" if slim else "classic")
+        self.bg(work, ok=lambda _r: self.toast("Skin changed. It shows up next time you join a game."),
+                fail=lambda e: self.toast(str(e), "err"))
 
     # ---- cursor
     def cursor_scope(self):
