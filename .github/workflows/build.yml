@@ -47,7 +47,13 @@ jobs:
           if (-not ($ver -match '^\d+(\.\d+)*$')) { $ver = "0.0.0" }
           pyinstaller --noconfirm --windowed --onedir --icon icon.ico --name SpectraLauncher fabric_launcher.py
           choco install innosetup -y --no-progress
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$ver" installer\SpectraLauncher.iss
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source }
+          Write-Host "Using $iscc"
+          Get-ChildItem dist\SpectraLauncher | Select-Object -First 5
+          (Get-Content installer\SpectraLauncher.iss -Raw).Replace("@APPVERSION@", $ver) | Set-Content installer\build.iss -Encoding utf8
+          & $iscc "/O$PWD\installer_out" installer\build.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE (see the errors above)" }
           Move-Item installer_out\SpectraLauncher-Setup.exe SpectraLauncher-Setup.exe
 
       - name: Build disk image (macOS)
