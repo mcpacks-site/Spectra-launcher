@@ -51,7 +51,10 @@ jobs:
           if (-not (Test-Path $iscc)) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source }
           Write-Host "Using $iscc"
           Get-ChildItem dist\SpectraLauncher | Select-Object -First 5
-          (Get-Content installer\SpectraLauncher.iss -Raw).Replace("@APPVERSION@", $ver) | Set-Content installer\build.iss -Encoding utf8
+          # Drop any preprocessor lines (starting with #), fill in the version, and show the final script in the log
+          $lines = Get-Content installer\SpectraLauncher.iss | Where-Object { $_.TrimStart() -notmatch '^#' } | ForEach-Object { $_.Replace("@APPVERSION@", $ver).Replace("{#AppVersion}", $ver) }
+          Set-Content -Path installer\build.iss -Value $lines -Encoding ascii
+          $n = 0; Get-Content installer\build.iss | ForEach-Object { $n++; Write-Host ("{0,3}: {1}" -f $n, $_) }
           & $iscc "/O$PWD\installer_out" installer\build.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE (see the errors above)" }
           Move-Item installer_out\SpectraLauncher-Setup.exe SpectraLauncher-Setup.exe
