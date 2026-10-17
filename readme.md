@@ -16,7 +16,15 @@ Website: https://mcpacks-site.github.io/Spectra-launcher/
 - **Skins** - upload a skin PNG (64x64, or the old 64x32 format) and apply it to your account, import the skin you already have, or design one in the built-in skin maker with a rotatable 3D preview. You can paint on the flat texture or directly on the 3D model.
 - **Your own account** - sign in with the Microsoft account that owns Minecraft: Java Edition. Only accounts that own the game can sign in and launch it. No license, authentication or safety checks are bypassed or disabled.
 
-## Requirements
+## Install
+
+Download the latest installer from the [Releases page](https://github.com/mcpacks-site/Spectra-launcher/releases):
+
+- **Windows** - run `SpectraLauncher-Setup.exe`. It installs for your user (no admin needed), adds a Start menu entry, and can add a desktop shortcut. Uninstall from Settings > Apps; your instances and worlds are kept. Windows SmartScreen may warn about an unrecognised publisher because the installer isn't code-signed yet: click **More info** then **Run anyway**.
+- **macOS** - open `SpectraLauncher.dmg` and drag Spectra Launcher into Applications. The app isn't notarized yet, so the first time, right-click it and choose **Open**.
+- **Linux** - unzip `SpectraLauncher-Linux.zip` and run `SpectraLauncher`.
+
+## Requirements (running from source)
 
 - A Microsoft account that owns **Minecraft: Java Edition**
 - Python 3.8 or newer **with tkinter** (included with the installers from python.org on Windows and macOS; on Debian/Ubuntu install it with `sudo apt install python3-tk`)
