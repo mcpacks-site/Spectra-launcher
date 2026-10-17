@@ -60,11 +60,17 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'Spectra Launcher needs camera access for mods that use it.'" "$PLIST"
           # Re-sign (ad-hoc) after editing the plist
           codesign --force --deep --sign - dist/SpectraLauncher.app
-          # Drag-to-Applications disk image
+          # Branded drag-to-Applications disk image
+          brew install create-dmg
           mkdir dmg_root
           cp -R dist/SpectraLauncher.app dmg_root/
-          ln -s /Applications dmg_root/Applications
-          hdiutil create -volname "Spectra Launcher" -srcfolder dmg_root -ov -format UDZO ${{ matrix.asset }}
+          create-dmg --volname "Spectra Launcher" --volicon icon.icns \
+            --background installer/dmg_background.png \
+            --window-pos 200 120 --window-size 660 400 --icon-size 100 --text-size 13 \
+            --icon "SpectraLauncher.app" 165 210 --hide-extension "SpectraLauncher.app" \
+            --app-drop-link 495 210 --no-internet-enable \
+            ${{ matrix.asset }} dmg_root \
+          || { echo "create-dmg failed, using a plain disk image"; rm -f ${{ matrix.asset }}; ln -s /Applications dmg_root/Applications; hdiutil create -volname "Spectra Launcher" -srcfolder dmg_root -ov -format UDZO ${{ matrix.asset }}; }
 
       - name: Build (Linux)
         if: runner.os == 'Linux'

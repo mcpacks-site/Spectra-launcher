@@ -1,52 +1,90 @@
-; Inno Setup script for Spectra Launcher.
-; Built by GitHub Actions: iscc /DAppVersion=2.1 installer\SpectraLauncher.iss
-#ifndef AppVersion
-  #define AppVersion "0.0.0"
-#endif
+name: Build Spectra Launcher
 
-[Setup]
-AppId={{6F1B7C52-3E0A-4C57-9B7E-5A9D2F8E41C3}
-AppName=Spectra Launcher
-AppVersion={#AppVersion}
-AppVerName=Spectra Launcher {#AppVersion}
-AppPublisher=Spectra Launcher
-AppPublisherURL=https://mcpacks-site.github.io/Spectra-launcher/
-AppSupportURL=https://github.com/mcpacks-site/Spectra-launcher/issues
-AppUpdatesURL=https://github.com/mcpacks-site/Spectra-launcher/releases
-DefaultDirName={autopf}\Spectra Launcher
-DefaultGroupName=Spectra Launcher
-DisableProgramGroupPage=yes
-; Install for the current user by default (no admin prompt); the user can choose "all users".
-PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
-OutputDir=..\installer_out
-OutputBaseFilename=SpectraLauncher-Setup
-SetupIconFile=..\icon.ico
-UninstallDisplayIcon={app}\SpectraLauncher.exe
-UninstallDisplayName=Spectra Launcher
-Compression=lzma2/max
-SolidCompression=yes
-WizardStyle=modern
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
-CloseApplications=yes
-RestartApplications=no
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
 
-[Languages]
-Name: "english"; MessagesFile: "compiler:Default.isl"
+permissions:
+  contents: write
 
-[Tasks]
-Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+            asset: SpectraLauncher-Setup.exe
+          - os: macos-latest
+            name: macOS
+            asset: SpectraLauncher.dmg
+          - os: ubuntu-latest
+            name: Linux
+            asset: SpectraLauncher-Linux.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
 
-[Files]
-Source: "..\dist\SpectraLauncher\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-[Icons]
-Name: "{autoprograms}\Spectra Launcher"; Filename: "{app}\SpectraLauncher.exe"
-Name: "{autodesktop}\Spectra Launcher"; Filename: "{app}\SpectraLauncher.exe"; Tasks: desktopicon
+      - name: Install Tk (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
 
-[Run]
-Filename: "{app}\SpectraLauncher.exe"; Description: "Launch Spectra Launcher"; Flags: nowait postinstall skipifsilent
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller
 
-; Uninstalling removes the program only. Your instances, worlds, mods and sign-in data in
-; %APPDATA%\SpectraLauncher are left alone.
+      - name: Build installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}".TrimStart("v")
+          if (-not ($ver -match '^\d+(\.\d+)*$')) { $ver = "0.0.0" }
+          pyinstaller --noconfirm --windowed --onedir --icon icon.ico --name SpectraLauncher fabric_launcher.py
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$ver" installer\SpectraLauncher.iss
+          Move-Item installer_out\SpectraLauncher-Setup.exe SpectraLauncher-Setup.exe
+
+      - name: Build disk image (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller --noconfirm --windowed --icon icon.icns --osx-bundle-identifier com.spectralauncher.app --name SpectraLauncher fabric_launcher.py
+          # Let macOS ask for microphone access on behalf of the launcher (needed for Simple Voice Chat etc.)
+          PLIST=dist/SpectraLauncher.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string 'Spectra Launcher needs microphone access so mods like Simple Voice Chat can use your microphone.'" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'Spectra Launcher needs camera access for mods that use it.'" "$PLIST"
+          # Re-sign (ad-hoc) after editing the plist
+          codesign --force --deep --sign - dist/SpectraLauncher.app
+          # Branded drag-to-Applications disk image
+          brew install create-dmg
+          mkdir dmg_root
+          cp -R dist/SpectraLauncher.app dmg_root/
+          create-dmg --volname "Spectra Launcher" --volicon icon.icns \
+            --background installer/dmg_background.png \
+            --window-pos 200 120 --window-size 660 400 --icon-size 100 --text-size 13 \
+            --icon "SpectraLauncher.app" 165 210 --hide-extension "SpectraLauncher.app" \
+            --app-drop-link 495 210 --no-internet-enable \
+            ${{ matrix.asset }} dmg_root \
+          || { echo "create-dmg failed, using a plain disk image"; rm -f ${{ matrix.asset }}; ln -s /Applications dmg_root/Applications; hdiutil create -volname "Spectra Launcher" -srcfolder dmg_root -ov -format UDZO ${{ matrix.asset }}; }
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          pyinstaller --noconfirm --onefile --name SpectraLauncher fabric_launcher.py
+          cd dist && zip ../${{ matrix.asset }} SpectraLauncher
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.asset }}
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}
