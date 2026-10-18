@@ -57,6 +57,19 @@ FABRIC_MAVEN = "https://maven.fabricmc.net/"
 ASSET_URL = "https://resources.download.minecraft.net"
 MODRINTH = "https://api.modrinth.com/v2"
 FABRIC_API_SLUG = "fabric-api"
+QUILT_META = "https://meta.quiltmc.org/v3"
+FORGE_PROMOS = "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
+FORGE_MAVEN = "https://maven.minecraftforge.net"
+NEOFORGE_MAVEN = "https://maven.neoforged.net/releases"
+NEOFORGE_VERSIONS = "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge"
+LOADERS = {"vanilla": "Vanilla", "fabric": "Fabric", "quilt": "Quilt", "forge": "Forge", "neoforge": "NeoForge"}
+LOADER_INFO = {
+    "vanilla": "Plain Minecraft with no mods.",
+    "fabric": "Lightweight and fast-updating. Fabric API is kept up to date for you.",
+    "quilt": "A community fork of Fabric. It can also run most Fabric mods.",
+    "forge": "The long-standing loader with a huge catalog of mods and modpacks.",
+    "neoforge": "The modern community fork of Forge, for Minecraft 1.20.2 and newer.",
+}
 NOWIN = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
@@ -437,17 +450,78 @@ def acct_label(a):
 # --------------------------------------------------------------------------
 # Modrinth
 # --------------------------------------------------------------------------
-def install_project(mc, project, mods_dir: Path, installed: dict, log, seen=None):
-    """Install the newest compatible Fabric build of a Modrinth project + required deps.
+def loader_of(inst):
+    l = inst.get("loader", "fabric")
+    return l if l in LOADERS else "fabric"
+
+
+def loader_label(inst):
+    return LOADERS[loader_of(inst)]
+
+
+def modrinth_loaders(loader):
+    return {"fabric": ["fabric"], "quilt": ["quilt", "fabric"], "forge": ["forge"],
+            "neoforge": ["neoforge"]}.get(loader, [])
+
+
+def _vkey(v):
+    return tuple(int(x) if x.isdigit() else 0 for x in re.split(r"[.\-]", v))
+
+
+def neoforge_mc(v):
+    """NeoForge 21.1.172 -> Minecraft 1.21.1 (21.0.x -> 1.21)."""
+    p = v.split("-")[0].split(".")
+    try:
+        major, minor = int(p[0]), int(p[1])
+    except (ValueError, IndexError):
+        return None
+    if major < 26:
+        return "1.%d%s" % (major, "" if minor == 0 else ".%d" % minor)
+    return "%d.%d" % (major, minor)
+
+
+def forge_version_for(mc):
+    promos = get_json(FORGE_PROMOS).get("promos", {})
+    return promos.get(f"{mc}-recommended") or promos.get(f"{mc}-latest")
+
+
+def neoforge_version_for(mc):
+    vs = [v for v in get_json(NEOFORGE_VERSIONS).get("versions", []) if neoforge_mc(v) == mc]
+    stable = [v for v in vs if not re.search(r"alpha|beta|snapshot", v)]
+    pool = sorted(stable or vs, key=_vkey)
+    return pool[-1] if pool else None
+
+
+def list_game_versions(loader):
+    """[(minecraft version, is_release)] newest first, for versions this launcher can start (1.13+)."""
+    if loader in ("fabric", "quilt"):
+        meta = FABRIC_META if loader == "fabric" else QUILT_META
+        return [(v["version"], v["stable"]) for v in get_json(f"{meta}/versions/game")]
+    out = []
+    for v in get_json(MANIFEST_URL)["versions"]:
+        out.append((v["id"], v["type"] == "release"))
+        if v["id"] == "1.13":
+            break
+    if loader == "vanilla":
+        return out
+    if loader == "forge":
+        have = {k.rsplit("-", 1)[0] for k in get_json(FORGE_PROMOS).get("promos", {})}
+    else:
+        have = {neoforge_mc(v) for v in get_json(NEOFORGE_VERSIONS).get("versions", [])}
+    return [(v, s) for v, s in out if v in have and s]
+
+
+def install_project(mc, project, mods_dir: Path, installed: dict, log, seen=None, loader="fabric"):
+    """Install the newest build of a Modrinth project for this loader + required deps.
     `installed` maps project_id -> filename and is updated in place."""
     seen = seen if seen is not None else set()
     if project in seen:
         return
     seen.add(project)
-    q = urllib.parse.urlencode({"game_versions": json.dumps([mc]), "loaders": json.dumps(["fabric"])})
+    q = urllib.parse.urlencode({"game_versions": json.dumps([mc]), "loaders": json.dumps(modrinth_loaders(loader))})
     versions = get_json(f"{MODRINTH}/project/{project}/version?{q}")
     if not versions:
-        log(f"No Fabric build of '{project}' for Minecraft {mc}.")
+        log(f"No {LOADERS.get(loader, loader)} build of '{project}' for Minecraft {mc}.")
         return
     pick = next((v for v in versions if v.get("version_type") == "release"), versions[0])
     f = next((x for x in pick["files"] if x.get("primary")), pick["files"][0])
@@ -465,7 +539,7 @@ def install_project(mc, project, mods_dir: Path, installed: dict, log, seen=None
     log(f"{pick.get('name') or project}: {f['filename']} " + ("downloaded." if new else "up to date."))
     for d in pick.get("dependencies", []):
         if d.get("dependency_type") == "required" and d.get("project_id"):
-            install_project(mc, d["project_id"], mods_dir, installed, log, seen)
+            install_project(mc, d["project_id"], mods_dir, installed, log, seen, loader)
 
 
 # --------------------------------------------------------------------------
@@ -537,11 +611,51 @@ class Core:
             j.chmod(0o755)
         return str(j)
 
+    def install_forge_family(self, inst, loader, mc, java):
+        """Run the official Forge/NeoForge installer once; returns the installed version id."""
+        lv = inst.get("loader_version")
+        if loader == "forge":
+            lv = lv or forge_version_for(mc)
+            url = f"{FORGE_MAVEN}/net/minecraftforge/forge/{mc}-{lv}/forge-{mc}-{lv}-installer.jar"
+        else:
+            lv = lv or neoforge_version_for(mc)
+            url = f"{NEOFORGE_MAVEN}/net/neoforged/neoforge/{lv}/neoforge-{lv}-installer.jar"
+        if not lv:
+            raise IOError(f"{LOADERS[loader]} has no build for Minecraft {mc}.")
+        inst["loader_version"] = lv
+        jar = ROOT / "installers" / f"{loader}-{mc}-{lv}-installer.jar"
+        self.log(f"Using {LOADERS[loader]} {lv}")
+        download(url, jar)
+        with zipfile.ZipFile(jar) as z:
+            vid = json.loads(z.read("version.json"))["id"]
+        vdir = VERSIONS / vid
+        marker = vdir / ".spectra_installed"
+        if not (marker.exists() and (vdir / f"{vid}.json").exists()):
+            profiles = ROOT / "launcher_profiles.json"
+            if not profiles.exists():
+                profiles.write_text(json.dumps({"profiles": {}, "version": 3}))
+            self.log(f"Installing {LOADERS[loader]} {lv} (one-time, this can take a few minutes)...")
+            proc = subprocess.Popen([java, "-jar", str(jar), "--installClient", str(ROOT)], cwd=str(ROOT),
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                    errors="replace", creationflags=NOWIN)
+            tail = []
+            for line in proc.stdout:
+                line = line.rstrip()
+                if line:
+                    tail = (tail + [line])[-12:]
+                    self.log(line)
+            if proc.wait() != 0 or not (vdir / f"{vid}.json").exists():
+                raise IOError(f"The {LOADERS[loader]} installer failed:\n" + "\n".join(tail[-6:]))
+            marker.write_text(lv)
+        return vid
+
     def prepare(self, inst, acct):
         if acct.get("type") != "msa" or not acct.get("access_token"):
             raise IOError("Please sign in with a Microsoft account that owns Minecraft: Java Edition.")
         mc = inst["version"]
-        self.log(f"Preparing '{inst['name']}' (Minecraft {mc} + Fabric)...")
+        loader = loader_of(inst)
+        self.log(f"Preparing '{inst['name']}' (Minecraft {mc}"
+                 + ("" if loader == "vanilla" else f" + {LOADERS[loader]}") + ")...")
 
         manifest = get_json(MANIFEST_URL)
         entry = next((v for v in manifest["versions"] if v["id"] == mc), None)
@@ -552,23 +666,36 @@ class Core:
         vjson_path = vdir / f"{mc}.json"
         download(entry["url"], vjson_path, entry.get("sha1"))
         vanilla = json.loads(vjson_path.read_text())
-
-        loaders = get_json(f"{FABRIC_META}/versions/loader/{mc}")
-        if not loaders:
-            raise IOError(f"Fabric does not support Minecraft {mc}.")
-        pick = next((l for l in loaders if l["loader"].get("stable")), loaders[0])
-        lv = pick["loader"]["version"]
-        self.log(f"Using Fabric Loader {lv}")
-        fabric = get_json(f"{FABRIC_META}/versions/loader/{mc}/{lv}/profile/json")
-        fid = fabric["id"]
-        fdir = VERSIONS / fid
-        fdir.mkdir(parents=True, exist_ok=True)
-        (fdir / f"{fid}.json").write_text(json.dumps(fabric, indent=2))
+        if "arguments" not in vanilla:
+            raise IOError("Minecraft versions older than 1.13 are not supported yet.")
 
         client = vanilla["downloads"]["client"]
         client_jar = vdir / f"{mc}.jar"
         self.log("Checking Minecraft client...")
         download(client["url"], client_jar, client["sha1"], client["size"])
+
+        required = vanilla.get("javaVersion", {}).get("majorVersion", 8)
+        java = self.ensure_java(required, inst.get("java", "").strip())
+        self.log(f"Java: {java}")
+
+        profile, fid = None, mc
+        if loader in ("fabric", "quilt"):
+            meta = FABRIC_META if loader == "fabric" else QUILT_META
+            loaders = get_json(f"{meta}/versions/loader/{mc}")
+            if not loaders:
+                raise IOError(f"{LOADERS[loader]} does not support Minecraft {mc}.")
+            pick = next((l for l in loaders
+                         if l["loader"].get("stable", "-" not in l["loader"]["version"])), loaders[0])
+            lv = pick["loader"]["version"]
+            self.log(f"Using {LOADERS[loader]} Loader {lv}")
+            profile = get_json(f"{meta}/versions/loader/{mc}/{lv}/profile/json")
+            fid = profile["id"]
+            fdir = VERSIONS / fid
+            fdir.mkdir(parents=True, exist_ok=True)
+            (fdir / f"{fid}.json").write_text(json.dumps(profile, indent=2))
+        elif loader in ("forge", "neoforge"):
+            fid = self.install_forge_family(inst, loader, mc, java)
+            profile = json.loads((VERSIONS / fid / f"{fid}.json").read_text())
 
         jobs, cp, natives = [], {}, []
         for lib in vanilla["libraries"]:
@@ -589,11 +716,21 @@ class Core:
                 p = LIBS / art["path"]
                 jobs.append((art["url"], p, art["sha1"], art["size"]))
                 cp[lib_key(lib["name"])] = p
-        for lib in fabric["libraries"]:
-            rel = maven_path(lib["name"])
-            base = lib.get("url", FABRIC_MAVEN)
-            p = LIBS / rel
-            jobs.append((base.rstrip("/") + "/" + rel, p, lib.get("sha1"), lib.get("size")))
+        for lib in (profile or {}).get("libraries", []):
+            if not rules_ok(lib.get("rules")):
+                continue
+            art = lib.get("downloads", {}).get("artifact")
+            if art:      # Forge / NeoForge style: explicit path + url (empty url = made by the installer)
+                p = LIBS / art["path"]
+                if art.get("url"):
+                    jobs.append((art["url"], p, art.get("sha1"), art.get("size")))
+                elif not p.exists():
+                    self.log(f"WARNING: missing generated library {art['path']}")
+            else:        # Fabric / Quilt style: maven name + base url
+                rel = maven_path(lib["name"])
+                base = lib.get("url", FABRIC_MAVEN)
+                p = LIBS / rel
+                jobs.append((base.rstrip("/") + "/" + rel, p, lib.get("sha1"), lib.get("size")))
             cp[lib_key(lib["name"])] = p
         self.log(f"Checking {len(jobs)} libraries...")
         self.download_all(jobs, "Libraries")
@@ -623,22 +760,19 @@ class Core:
 
         game_dir = game_dir_of(inst)
         game_dir.mkdir(parents=True, exist_ok=True)
-        if inst.get("auto_fabric_api", True):
+        if loader == "fabric" and inst.get("auto_fabric_api", True):
             self.log("Checking Fabric API...")
             inst.setdefault("mods", {})
             try:
-                install_project(mc, FABRIC_API_SLUG, game_dir / "mods", inst["mods"], self.log)
+                install_project(mc, FABRIC_API_SLUG, game_dir / "mods", inst["mods"], self.log, loader="fabric")
             except Exception as e:  # noqa: BLE001
                 self.log(f"WARNING: could not update Fabric API: {e}")
-
-        required = vanilla.get("javaVersion", {}).get("majorVersion", 8)
-        java = self.ensure_java(required, inst.get("java", "").strip())
-        self.log(f"Java: {java}")
 
         classpath = [str(p) for p in cp.values()] + [str(client_jar)]
         subs = {
             "auth_player_name": acct["username"],
-            "version_name": fid,
+            # Forge's ignore list names the client jar "${version_name}.jar", which is the vanilla jar
+            "version_name": mc if loader in ("forge", "neoforge") else fid,
             "game_directory": str(game_dir),
             "assets_root": str(ASSETS),
             "assets_index_name": vanilla["assets"],
@@ -670,11 +804,12 @@ class Core:
                     out.append(re.sub(r"\$\{(\w+)\}", lambda m: subs.get(m.group(1), m.group(0)), v))
             return out
 
-        jvm = expand(vanilla["arguments"]["jvm"] + fabric.get("arguments", {}).get("jvm", []))
-        game = expand(vanilla["arguments"]["game"] + fabric.get("arguments", {}).get("game", []))
+        extra_args = (profile or {}).get("arguments", {})
+        jvm = expand(vanilla["arguments"]["jvm"] + extra_args.get("jvm", []))
+        game = expand(vanilla["arguments"]["game"] + extra_args.get("game", []))
         extra = shlex.split(inst.get("jvm_args", ""), posix=(os.name != "nt"))
         cmd = [java, f"-Xmx{int(float(inst.get('ram_gb', 4)) * 1024)}M", *extra, *jvm,
-               fabric["mainClass"], *game]
+               (profile or vanilla)["mainClass"], *game]
         return cmd, game_dir
 
 
@@ -1267,50 +1402,104 @@ def tree_box(master, columns, heads, widths, stretch_col, height=8):
 # --------------------------------------------------------------------------
 class AddInstanceDialog(Dialog):
     def __init__(self, app):
-        super().__init__(app, "New instance", 500, 560)
+        super().__init__(app, "New instance", 560, 700)
+        self.loader = "fabric"
         b = tk.Frame(self, bg=C["panel"])
         b.pack(fill="both", expand=True, padx=32, pady=28)
         lbl(b, "New instance", 20, "bold").pack(anchor="w")
-        hint(b, "Pick a Minecraft version. Fabric Loader, Fabric API and a matching Java are set up for you "
-                "the first time you play.", 430).pack(anchor="w", pady=(4, 20))
+        self.info = hint(b, "", 480)
+        self.info.pack(anchor="w", pady=(4, 16))
         field_label(b, "Name").pack(anchor="w", pady=(0, 6))
         self.name = tk.StringVar(value="New instance")
         e = entry(b, self.name)
         e.pack(fill="x")
         e.entry.focus_set()
         e.entry.select_range(0, "end")
-        field_label(b, "Minecraft version").pack(anchor="w", pady=(18, 6))
+        field_label(b, "Game type").pack(anchor="w", pady=(16, 6))
+        row = tk.Frame(b, bg=C["panel"])
+        row.pack(anchor="w")
+        self.lbtns = {}
+        for key, name in LOADERS.items():
+            btn = Btn(row, name, lambda k=key: self.set_loader(k), "secondary", h=34, size=9, w=92)
+            btn.pack(side="left", padx=(0, 5))
+            self.lbtns[key] = btn
+        field_label(b, "Minecraft version").pack(anchor="w", pady=(16, 6))
         self.ver = tk.StringVar()
         self.box = ttk.Combobox(b, textvariable=self.ver, state="readonly", font=font(10))
         self.box.pack(fill="x")
         self.snap = tk.BooleanVar(value=False)
         self.api = tk.BooleanVar(value=True)
-        sw = tk.Frame(b, bg=C["panel"])
-        sw.pack(fill="x", pady=(22, 0))
-        switch_row(sw, "Show snapshots", self.snap, "Include development snapshots in the list.").pack(fill="x", pady=6)
+        self.sw = tk.Frame(b, bg=C["panel"])
+        self.sw.pack(fill="x", pady=(18, 0))
+        self.snap_row = switch_row(self.sw, "Show snapshots", self.snap, "Include development snapshots in the list.")
+        self.snap_row.pack(fill="x", pady=6)
         self.snap.trace_add("write", lambda *_: self.refresh())
-        switch_row(sw, "Install Fabric API", self.api, "Most Fabric mods need it. Kept up to date automatically.").pack(fill="x", pady=6)
+        self.api_row = switch_row(self.sw, "Install Fabric API", self.api,
+                                  "Most Fabric mods need it. Kept up to date automatically.")
+        self.api_row.pack(fill="x", pady=6)
         btns = tk.Frame(b, bg=C["panel"])
         btns.pack(side="bottom", fill="x")
         Btn(btns, "Create instance", self.create, "primary", h=44, size=10).pack(side="right")
         Btn(btns, "Cancel", self.destroy, "ghost", h=44).pack(side="right", padx=(0, 8))
         self.bind("<Return>", lambda _e: self.create())
         self.bind("<Escape>", lambda _e: self.destroy())
+        self.set_loader("fabric")
+
+    def set_loader(self, key):
+        self.loader = key
+        for k, btn in self.lbtns.items():
+            btn.style = "primary" if k == key else "secondary"
+            btn.draw()
+        self.info.config(text=LOADER_INFO[key] + " A matching Java is set up for you the first time you play.")
+        if key == "fabric":
+            self.api_row.pack(fill="x", pady=6)
+        else:
+            self.api_row.pack_forget()
+        if key in ("forge", "neoforge"):
+            self.snap_row.pack_forget()
+        else:
+            self.snap_row.pack(fill="x", pady=6, before=self.api_row if key == "fabric" else None)
         self.refresh()
 
     def refresh(self):
-        vs = [v for v, stable in self.app.game_versions if stable or self.snap.get()]
+        loader = self.loader
+        if loader == "fabric" and self.app.game_versions:
+            self.fill(self.app.game_versions)
+            return
+        cached = self.app.loader_versions.get(loader)
+        if cached is not None:
+            self.fill(cached)
+            return
+        self.box.configure(values=[])
+        self.ver.set("Loading…")
+
+        def done(items):
+            self.app.loader_versions[loader] = items
+            if self.winfo_exists() and self.loader == loader:
+                self.fill(items)
+
+        def fail(e):
+            if self.winfo_exists() and self.loader == loader:
+                self.ver.set("")
+                self.app.toast(f"Could not load {LOADERS[loader]} versions", "err")
+        self.app.bg(lambda: list_game_versions(loader), done, fail)
+
+    def fill(self, items):
+        vs = [v for v, stable in items if stable or (self.snap.get() and self.loader in ("vanilla", "fabric", "quilt"))]
         self.box.configure(values=vs)
         if vs and self.ver.get() not in vs:
             self.ver.set(vs[0])
+        elif not vs:
+            self.ver.set("")
 
     def create(self):
         name = self.name.get().strip()
-        if not name or not self.ver.get():
+        if not name or not self.ver.get() or self.ver.get() == "Loading…":
             messagebox.showwarning("New instance", "Enter a name and pick a version.", parent=self)
             return
-        inst = {"id": new_instance_id(name), "name": name, "version": self.ver.get(),
-                "ram_gb": 4, "java": "", "jvm_args": "", "auto_fabric_api": self.api.get(), "mods": {}}
+        inst = {"id": new_instance_id(name), "name": name, "version": self.ver.get(), "loader": self.loader,
+                "ram_gb": 4, "java": "", "jvm_args": "",
+                "auto_fabric_api": self.api.get() and self.loader == "fabric", "mods": {}}
         save_instance(inst)
         game_dir_of(inst).mkdir(parents=True, exist_ok=True)
         self.app.refresh_instances(select=inst["id"])
@@ -1329,12 +1518,14 @@ class EditInstanceDialog(Dialog):
         top.pack(fill="x", padx=32, pady=(26, 0))
         self.title_lbl = lbl(top, inst["name"], 20, "bold")
         self.title_lbl.pack(anchor="w")
-        lbl(top, f"Minecraft {inst['version']}  ·  Fabric", 10, color=C["muted"]).pack(anchor="w", pady=(2, 10))
-        self.tabs = Tabs(self, ["Settings", "Mods"], self.switch)
+        lbl(top, f"Minecraft {inst['version']}  ·  {loader_label(inst)}", 10, color=C["muted"]).pack(anchor="w", pady=(2, 10))
+        self.modded = loader_of(inst) != "vanilla"
+        self.tabs = Tabs(self, ["Settings", "Mods"] if self.modded else ["Settings"], self.switch)
         self.tabs.pack(fill="x", padx=32)
         self.stage = tk.Frame(self, bg=C["panel"])
         self.stage.pack(fill="both", expand=True, padx=32, pady=(18, 24))
-        self.frames = [self.build_settings(self.stage), self.build_mods(self.stage)]
+        self.frames = [self.build_settings(self.stage)] + ([self.build_mods(self.stage)] if self.modded else [])
+        tab = min(tab, len(self.frames) - 1)
         self.tabs.active = tab
         self.switch(tab)
         self.bind("<Escape>", lambda _e: self.destroy())
@@ -1378,8 +1569,9 @@ class EditInstanceDialog(Dialog):
         field_label(col, "Extra JVM arguments").grid(row=7, column=0, sticky="w", pady=(18, 6))
         entry(col, self.v_args).grid(row=8, column=0, sticky="ew")
 
-        sw = switch_row(col, "Keep Fabric API installed and up to date", self.v_api)
-        sw.grid(row=9, column=0, sticky="ew", pady=(22, 0))
+        if loader_of(self.inst) == "fabric":
+            sw = switch_row(col, "Keep Fabric API installed and up to date", self.v_api)
+            sw.grid(row=9, column=0, sticky="ew", pady=(22, 0))
         Btn(f, "Save changes", self.save, "primary", h=44).pack(side="bottom", anchor="e")
         return f
 
@@ -1484,7 +1676,8 @@ class EditInstanceDialog(Dialog):
         query = self.q.get().strip()
         if not query:
             return
-        facets = json.dumps([["project_type:mod"], ["categories:fabric"], [f"versions:{self.inst['version']}"]])
+        facets = json.dumps([["project_type:mod"], [f"categories:{l}" for l in modrinth_loaders(loader_of(self.inst))],
+                             [f"versions:{self.inst['version']}"]])
         url = f"{MODRINTH}/search?" + urllib.parse.urlencode({"query": query, "facets": facets, "limit": 25})
         self.msg.config(text="Searching…")
 
@@ -1511,7 +1704,7 @@ class EditInstanceDialog(Dialog):
         def work():
             seen, logs = set(), []
             for pid in sel:
-                install_project(mc, pid, self.mods_dir, installed, logs.append, seen)
+                install_project(mc, pid, self.mods_dir, installed, logs.append, seen, loader_of(self.inst))
             return logs
 
         def done(logs):
@@ -1627,7 +1820,7 @@ class InstanceGrid(tk.Frame):
         draw_logo(cv, cx - 44, cy - 124, 88)
         cv.create_text(cx, cy - 12, text="Welcome to Spectra", fill=C["text"], font=font(20, "bold"))
         cv.create_text(cx, cy + 34, text="Create an instance and pick a Minecraft version.\n"
-                       "Fabric, Fabric API and Java are set up automatically.",
+                       "Vanilla, Fabric, Quilt, Forge or NeoForge. Java is set up automatically.",
                        fill=C["muted"], font=font(10), justify="center")
         b = Btn(cv, "New instance", self.app.add_instance, "primary", h=46, bg=C["bg"], icon="plus")
         cv.create_window(cx, cy + 100, window=b)
@@ -1660,9 +1853,10 @@ class InstanceGrid(tk.Frame):
         cv.create_polygon(x + w - 110, y + bh + 1, x + w - 84, y + 14, x + w - 52, y + bh + 1,
                           fill=lite, outline="")
         cv.create_text(x + 18, y + 22, text=inst["version"], anchor="w", fill="#ffffff", font=font(18, "bold"))
-        fw = text_width("FABRIC", font(7, "bold")) + 16
+        tag = loader_label(inst).upper()
+        fw = text_width(tag, font(7, "bold")) + 16
         rrect(cv, x + 18, y + 46, x + 18 + fw, y + 64, 8, fill=mix(c2, "#000000", 0.35), outline="")
-        cv.create_text(x + 18 + fw / 2, y + 55, text="FABRIC", fill="#e9fff3", font=font(7, "bold"))
+        cv.create_text(x + 18 + fw / 2, y + 55, text=tag, fill="#e9fff3", font=font(7, "bold"))
         nm = fit_text(inst["name"], font(12, "bold"), w - 36 - 50)
         cv.create_text(x + 18, y + bh + 26, text=nm, anchor="w", fill=C["text"], font=font(12, "bold"))
         mods = len(inst.get("mods", {}))
@@ -2040,6 +2234,8 @@ def sync_cursor_mod(inst, wanted, log):
     mods_dir = game_dir_of(inst) / "mods"
     installed = inst.setdefault("mods", {})
     pid = inst.get("cursor_mod_pid")
+    if wanted and loader_of(inst) != "fabric":
+        return   # the cursor mod is a Fabric mod
     if wanted:
         if not pid:
             pid = get_json(f"{MODRINTH}/project/{CURSOR_MOD_SLUG}")["id"]
@@ -3497,6 +3693,7 @@ class App:
         # Only Microsoft accounts are supported; ignore anything else left in an old file.
         self.accounts = [a for a in load_json(ACCOUNTS, {}).get("accounts", []) if a.get("type") == "msa"]
         self.game_versions, self.instances = [], []
+        self.loader_versions = {}
         self.busy, self.phase = False, None
         self.sel_id = self.cfg.get("last_instance")
         self.page = "instances"
@@ -3655,12 +3852,12 @@ class App:
         tt.pack(side="left")
         lbl(tt, APP_NAME, 20, "bold", bg=C["card"]).pack(anchor="w")
         lbl(tt, f"Version {APP_VERSION}", 10, color=C["muted"], bg=C["card"]).pack(anchor="w")
-        lbl(b, "A launcher for Minecraft: Java Edition with the Fabric mod loader. Create instances, install mods "
+        lbl(b, "A launcher for Minecraft: Java Edition with Vanilla, Fabric, Quilt, Forge and NeoForge. Create instances, install mods "
                "and their dependencies, and play with your own Microsoft account. Spectra runs entirely on your "
                "computer and collects no data.", 10, color=C["text"], bg=C["card"], wraplength=640,
             justify="left").grid(row=2, column=0, sticky="w", pady=(20, 10))
         lbl(b, "Spectra Launcher is not an official Minecraft product. It is not approved by or associated with "
-               "Mojang or Microsoft, and it is not affiliated with the Fabric project.", 9, color=C["muted"],
+               "Mojang or Microsoft, and it is not affiliated with the Fabric, Quilt, Forge or NeoForge projects.", 9, color=C["muted"],
             bg=C["card"], wraplength=640, justify="left").grid(row=3, column=0, sticky="w")
         row = tk.Frame(b, bg=C["card"])
         row.grid(row=4, column=0, sticky="w", pady=(20, 0))
@@ -3778,7 +3975,7 @@ class App:
             ic.create_image(1, 1, anchor="nw", image=grad_image(ic, 52, 52, c1, c2, 12))
             ic.create_text(27, 27, text=inst["version"].split("-")[0][:7], fill="#ffffff", font=font(9, "bold"))
             self.bar_name.config(text=fit_text(inst["name"], font(12, "bold"), 210))
-            self.bar_meta.config(text=f"Minecraft {inst['version']}  ·  Fabric  ·  {inst.get('ram_gb', 4):g} GB")
+            self.bar_meta.config(text=f"Minecraft {inst['version']}  ·  {loader_label(inst)}  ·  {inst.get('ram_gb', 4):g} GB")
         else:
             rrect(ic, 1, 1, 53, 53, 12, fill="#0e1510", outline=C["line2"], dash=(3, 3))
             self.bar_name.config(text="No instance selected")
@@ -3918,7 +4115,7 @@ class App:
         if not self.instance_by_id(self.sel_id):
             self.sel_id = self.instances[0]["id"] if self.instances else None
         n = len(self.instances)
-        self.inst_sub.config(text=f"{n} instance{'s' if n != 1 else ''}  ·  Minecraft: Java Edition with Fabric")
+        self.inst_sub.config(text=f"{n} instance{'s' if n != 1 else ''}  ·  Minecraft: Java Edition")
         self.update_bar()
         self.grid_view.draw()
 

@@ -1,17 +1,18 @@
 # Spectra Launcher
 
-A free, open-source launcher for **Minecraft: Java Edition** with the **Fabric** mod loader.
+A free, open-source launcher for **Minecraft: Java Edition** with **Vanilla, Fabric, Quilt, Forge and NeoForge** support.
 Create separate instances, install mods and their dependencies with a click, and sign in with your own Microsoft account.
 
-> Spectra Launcher is **not an official Minecraft product** and is **not approved by or associated with Mojang or Microsoft**. It is also not affiliated with the Fabric project.
+> Spectra Launcher is **not an official Minecraft product** and is **not approved by or associated with Mojang or Microsoft**. It is also not affiliated with the Fabric, Quilt, Forge or NeoForge projects.
 
 Website: https://mcpacks-site.github.io/Spectra-launcher/
 
 ## Features
 
 - **Instances** - keep separate installs, each with its own Minecraft version, mods, memory and Java settings
-- **Automatic setup** - downloads the game files, Fabric Loader, Fabric API and a matching Java runtime (Eclipse Temurin) if you don't have one
-- **Mod manager** - search Modrinth, install mods with their required dependencies, and enable, disable or remove them
+- **Vanilla and mod loaders** - pick Vanilla, Fabric, Quilt, Forge or NeoForge for each instance (Minecraft 1.13 and newer). Forge and NeoForge are installed with their official installers the first time you play.
+- **Automatic setup** - downloads the game files, the mod loader, Fabric API (on Fabric) and a matching Java runtime (Eclipse Temurin) if you don't have one
+- **Mod manager** - search Modrinth for mods that match your instance's loader, install them with their required dependencies, and enable, disable or remove them
 - **Custom cursors** - pick a pointer style for the launcher; optionally add the Cursors Extended mod to your instances for in-game pointers. On Windows the pointer can also be applied system-wide while the launcher is open.
 - **Skins** - upload a skin PNG (64x64, or the old 64x32 format) and apply it to your account, import the skin you already have, or design one in the built-in skin maker with a rotatable 3D preview. You can paint on the flat texture or directly on the 3D model. Capes you own can be previewed on the model and equipped from the same page.
 - **Your own account** - sign in with the Microsoft account that owns Minecraft: Java Edition. Only accounts that own the game can sign in and launch it. No license, authentication or safety checks are bypassed or disabled.
@@ -65,7 +66,7 @@ Your instances (worlds and mods) are in `instances/`. Your sign-in tokens are in
 Spectra Launcher runs entirely on your computer. The project runs no servers and collects no data. The launcher connects only to:
 
 - Microsoft, Xbox Live and Mojang - to sign you in, verify you own Minecraft, and download the game
-- Fabric - to download the mod loader
+- Fabric, Quilt, Forge and NeoForge - to download the mod loader and its version lists
 - Modrinth - to search for and download mods
 - Adoptium - to download Java if you don't have a suitable version
 - Mojang's skin servers (`api.minecraftservices.com`, `textures.minecraft.net`) - only when you apply or import a skin
@@ -77,6 +78,10 @@ Sign-in uses Microsoft's standard device code flow with the scope `XboxLive.sign
 - **"CERTIFICATE_VERIFY_FAILED" on macOS** - the launcher normally handles this itself. If it still happens, open the Python folder in Applications and double-click **Install Certificates.command**.
 - **"Minecraft login failed"** - the account you signed in with doesn't own Minecraft: Java Edition.
 - **A mod isn't listed** - it may not have a Fabric build for the Minecraft version of that instance.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
 
 ## Contact
 
