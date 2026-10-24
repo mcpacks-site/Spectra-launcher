@@ -10,9 +10,14 @@ Website: https://mcpacks-site.github.io/Spectra-launcher/
 ## Features
 
 - **Instances** - keep separate installs, each with its own Minecraft version, mods, memory and Java settings
-- **Vanilla and mod loaders** - pick Vanilla, Fabric, Quilt, Forge or NeoForge for each instance (Minecraft 1.13 and newer). Forge and NeoForge are installed with their official installers the first time you play.
+- **Vanilla and mod loaders** - pick Vanilla, Fabric, Quilt, Forge or NeoForge for each instance (Vanilla from 1.7.10; Forge and NeoForge versions are whatever their installers support). Forge and NeoForge are installed with their official installers the first time you play.
 - **Automatic setup** - downloads the game files, the mod loader, Fabric API (on Fabric) and a matching Java runtime (Eclipse Temurin) if you don't have one
 - **Mod manager** - search Modrinth for mods that match your instance's loader, install them with their required dependencies, and enable, disable or remove them
+- **Mods, resource packs, shaders and datapacks** - each instance has tabs to search Modrinth, install and enable, disable or remove every kind of content. Datapacks go into the world you pick.
+- **Modpacks** - browse Modrinth modpacks and install one as a new instance, or import a `.mrpack` file. Packs that need CurseForge are not supported.
+- **Instance tools** - duplicate an instance, export it to a zip and import it elsewhere, back up and restore worlds, browse screenshots, and see playtime.
+- **Launch options** - per-instance window size, fullscreen, auto-join a server, and a card colour.
+- **Themes** - dark or light, with five accent colours (Settings page).
 - **Custom cursors** - pick a pointer style for the launcher; optionally add the Cursors Extended mod to your instances for in-game pointers. On Windows the pointer can also be applied system-wide while the launcher is open.
 - **Skins** - upload a skin PNG (64x64, or the old 64x32 format) and apply it to your account, import the skin you already have, or design one in the built-in skin maker with a rotatable 3D preview. You can paint on the flat texture or directly on the 3D model. Capes you own can be previewed on the model and equipped from the same page.
 - **Your own account** - sign in with the Microsoft account that owns Minecraft: Java Edition. Only accounts that own the game can sign in and launch it. No license, authentication or safety checks are bypassed or disabled.
