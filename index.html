@@ -3,133 +3,257 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#100a1f">
 <title>Spectra Launcher - A free, open-source launcher for Minecraft</title>
-<meta name="description" content="Spectra Launcher is a free, open-source launcher for Minecraft: Java Edition with Vanilla, Fabric, Quilt, Forge and NeoForge. Manage instances and mods, and sign in with your own Microsoft account.">
+<meta name="description" content="Spectra Launcher is a free, open-source launcher for Minecraft: Java Edition with Vanilla, Fabric, Quilt, Forge and NeoForge. Manage instances, mods, modpacks and skins, and sign in with your own Microsoft account.">
+<meta property="og:title" content="Spectra Launcher">
+<meta property="og:description" content="A free, open-source launcher for Minecraft: Java Edition.">
+<meta property="og:image" content="loaders.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #f6f7f4;
-    --surface: #ffffff;
-    --text: #1d2420;
-    --muted: #5b665f;
-    --line: #dfe4dd;
-    --accent: #2f7d4f;
-    --accent-ink: #ffffff;
-    --note-bg: #fff6df;
-    --note-line: #ecd48a;
-    --note-text: #5c4710;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #121613;
-      --surface: #1a201c;
-      --text: #e8ede9;
-      --muted: #9aa69e;
-      --line: #2a332d;
-      --accent: #4fae78;
-      --accent-ink: #0c1a11;
-      --note-bg: #2b2412;
-      --note-line: #5a4a1c;
-      --note-text: #ecd9a0;
-    }
+    --bg: #100a1f;
+    --bg2: #160e2b;
+    --surface: rgba(255,255,255,.04);
+    --surface2: rgba(255,255,255,.07);
+    --line: rgba(255,255,255,.09);
+    --line2: rgba(255,255,255,.16);
+    --text: #f3f0fb;
+    --muted: #a59fba;
+    --dim: #756e8d;
+    --a1: #4fe39a;
+    --a2: #2fc9d4;
+    --glow: rgba(124,92,255,.35);
+    --sans: "Geist", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
+  html { scroll-behavior: smooth; scroll-padding-top: 80px; }
   body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.65 var(--sans); -webkit-font-smoothing: antialiased;
+    background-image:
+      radial-gradient(900px 520px at 50% -120px, var(--glow), transparent 70%),
+      radial-gradient(700px 420px at 90% 30%, rgba(47,201,212,.10), transparent 70%);
+    background-repeat: no-repeat;
   }
-  a { color: var(--accent); }
-  .wrap { max-width: 880px; margin: 0 auto; padding: 0 20px; }
-  header.site { border-bottom: 1px solid var(--line); background: var(--surface); }
-  header.site .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 14px; padding-bottom: 14px; flex-wrap: wrap; }
-  .brand { font-weight: 700; font-size: 1.1rem; letter-spacing: .2px; }
-  nav a { margin-left: 18px; text-decoration: none; color: var(--muted); font-size: .95rem; }
-  nav a:hover { color: var(--text); }
-  .hero { padding: 64px 0 40px; }
-  .hero h1 { font-size: clamp(2rem, 5vw, 3rem); line-height: 1.15; margin: 0 0 14px; }
-  .hero p.lead { font-size: 1.15rem; color: var(--muted); max-width: 60ch; margin: 0 0 26px; }
-  .btns { display: flex; gap: 12px; flex-wrap: wrap; }
-  .btn { display: inline-block; padding: 11px 20px; border-radius: 8px; text-decoration: none; font-weight: 600; border: 1px solid var(--accent); }
-  .btn.primary { background: var(--accent); color: var(--accent-ink); }
-  .btn.ghost { color: var(--accent); background: transparent; }
-  .note { background: var(--note-bg); border: 1px solid var(--note-line); color: var(--note-text); border-radius: 10px; padding: 14px 18px; margin: 28px 0 0; font-size: .95rem; }
-  section { padding: 38px 0; border-top: 1px solid var(--line); }
-  h2 { font-size: 1.5rem; margin: 0 0 14px; }
-  h3 { font-size: 1.05rem; margin: 0 0 6px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; margin-top: 18px; }
-  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
-  .card p { margin: 0; color: var(--muted); font-size: .95rem; }
-  ol, ul { padding-left: 22px; }
-  li { margin: 6px 0; }
-  code { background: var(--surface); border: 1px solid var(--line); padding: 1px 6px; border-radius: 5px; font-size: .9em; }
-  .policy h3 { margin-top: 20px; }
-  footer { border-top: 1px solid var(--line); padding: 28px 0 48px; color: var(--muted); font-size: .9rem; }
+  html, body { overflow-x: clip; }
+  a { color: var(--a1); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  img { max-width: 100%; display: block; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+  .mono { font-family: var(--mono); }
+
+  /* nav */
+  header.site { position: sticky; top: 0; z-index: 20; backdrop-filter: blur(14px); background: rgba(16,10,31,.72); border-bottom: 1px solid var(--line); }
+  header.site .wrap { display: flex; align-items: center; justify-content: space-between; height: 64px; gap: 16px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.05rem; color: var(--text); }
+  .brand:hover { text-decoration: none; }
+  .brand svg { width: 26px; height: 26px; }
+  nav.links { display: flex; gap: 4px; }
+  nav.links a { color: var(--muted); font-size: .92rem; padding: 6px 12px; border-radius: 8px; }
+  nav.links a:hover { color: var(--text); background: var(--surface); text-decoration: none; }
+  .nav-cta { display: flex; gap: 8px; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 18px; border-radius: 10px; font-weight: 600; font-size: .95rem; border: 1px solid var(--line2); color: var(--text); background: var(--surface); transition: transform .15s, background .15s, border-color .15s; }
+  .btn:hover { background: var(--surface2); text-decoration: none; transform: translateY(-1px); }
+  .btn.primary { background: linear-gradient(135deg, var(--a1), var(--a2)); color: #07140e; border: 0; box-shadow: 0 8px 28px -8px rgba(79,227,154,.55); }
+  .btn.primary:hover { filter: brightness(1.06); }
+  .btn.sm { padding: 7px 14px; font-size: .88rem; border-radius: 9px; }
+  .btn.lg { padding: 14px 26px; font-size: 1.02rem; border-radius: 12px; }
+
+  /* hero */
+  .hero { padding: 88px 0 24px; text-align: center; }
+  .eyebrow { display: inline-flex; align-items: center; gap: 10px; padding: 6px 14px 6px 8px; border: 1px solid var(--line2); border-radius: 999px; background: var(--surface); font-size: .85rem; color: var(--muted); }
+  .eyebrow .tag { background: linear-gradient(135deg, var(--a1), var(--a2)); color: #07140e; font-weight: 700; font-size: .72rem; padding: 2px 9px; border-radius: 999px; letter-spacing: .04em; }
+  .hero h1 { font-size: clamp(2.5rem, 7vw, 5rem); line-height: 1.04; letter-spacing: -.035em; font-weight: 800; margin: 24px auto 20px; max-width: 14ch; }
+  .grad { background: linear-gradient(135deg, var(--a1), var(--a2) 60%, #8f7bff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .hero p.lead { font-size: 1.2rem; color: var(--muted); max-width: 56ch; margin: 0 auto 34px; }
+  .hero .btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .dl { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 22px; }
+  .dl a { display: inline-flex; align-items: center; gap: 10px; padding: 9px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text); font-size: .9rem; }
+  .dl a:hover { border-color: var(--line2); background: var(--surface2); text-decoration: none; }
+  .dl small { font-family: var(--mono); color: var(--dim); font-size: .78rem; }
+  .shot-hero { margin: 56px auto 0; max-width: 1000px; position: relative; }
+  .shot-hero::before { content: ""; position: absolute; inset: -40px -20px; background: radial-gradient(closest-side, var(--glow), transparent 75%); z-index: -1; filter: blur(30px); }
+  .frame { border: 1px solid var(--line2); border-radius: 16px; overflow: hidden; background: #0a0714; box-shadow: 0 40px 100px -30px rgba(0,0,0,.8); }
+  .frame img { width: 100%; height: auto; }
+  .note { max-width: 760px; margin: 26px auto 0; padding: 12px 18px; border: 1px solid rgba(255,200,87,.28); background: rgba(255,200,87,.06); color: #e9d3a0; border-radius: 12px; font-size: .9rem; text-align: left; }
+
+  /* sections */
+  section { padding: 96px 0 0; }
+  .kicker { font-family: var(--mono); font-size: .8rem; letter-spacing: .14em; text-transform: uppercase; color: var(--a1); margin: 0 0 14px; }
+  h2 { font-size: clamp(2rem, 4.6vw, 3.2rem); line-height: 1.08; letter-spacing: -.03em; font-weight: 800; margin: 0 0 16px; max-width: 18ch; }
+  .sub { color: var(--muted); font-size: 1.1rem; max-width: 60ch; margin: 0 0 40px; }
+  h3 { font-size: 1.08rem; margin: 0 0 8px; letter-spacing: -.01em; }
+  .grid { display: grid; gap: 16px; }
+  .g3 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .g4 { grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 24px; transition: border-color .2s, transform .2s, background .2s; }
+  .card:hover { border-color: var(--line2); background: var(--surface2); }
+  .card p { margin: 0; color: var(--muted); font-size: .96rem; }
+  .ico { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; margin-bottom: 16px; background: linear-gradient(135deg, rgba(79,227,154,.18), rgba(47,201,212,.12)); border: 1px solid rgba(79,227,154,.25); color: var(--a1); }
+  .ico svg { width: 22px; height: 22px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+  .chip { font-family: var(--mono); font-size: .88rem; padding: 8px 16px; border: 1px solid var(--line2); border-radius: 999px; background: var(--surface); color: var(--text); }
+  .chip.on { border-color: rgba(79,227,154,.5); color: var(--a1); }
+
+  /* gallery */
+  .gallery { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); }
+  figure { margin: 0; }
+  figcaption { margin-top: 12px; color: var(--muted); font-size: .92rem; }
+  figcaption b { color: var(--text); font-weight: 600; }
+  .frame.pad img { padding: 0; }
+
+  /* links */
+  .link-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; color: var(--text); }
+  .link-card:hover { text-decoration: none; }
+  .link-card span.arrow { color: var(--a1); font-size: 1.3rem; transition: transform .2s; }
+  .link-card:hover span.arrow { transform: translateX(4px); }
+  .link-card b { display: block; font-size: 1.05rem; }
+  .link-card em { font-style: normal; color: var(--muted); font-size: .92rem; }
+
+  /* steps */
+  ol.steps { list-style: none; counter-reset: s; padding: 0; margin: 0; display: grid; gap: 14px; }
+  ol.steps li { counter-increment: s; position: relative; padding: 20px 22px 20px 74px; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; margin: 0; color: var(--muted); }
+  ol.steps li::before { content: counter(s, decimal-leading-zero); position: absolute; left: 22px; top: 19px; font-family: var(--mono); font-size: 1.15rem; color: var(--a1); }
+  ol.steps strong { color: var(--text); font-weight: 600; }
+  .req { margin-top: 22px; color: var(--muted); }
+  code { font-family: var(--mono); background: var(--surface2); border: 1px solid var(--line); padding: 1px 7px; border-radius: 6px; font-size: .88em; color: var(--text); }
+
+  /* privacy */
+  .policy .doc { background: var(--surface); border: 1px solid var(--line); border-radius: 20px; padding: 32px; max-width: 820px; }
+  .policy h3 { margin-top: 26px; }
+  .policy p, .policy li { color: var(--muted); }
+  .policy ul { padding-left: 20px; }
+  .policy .doc > p:first-child { color: var(--dim); font-family: var(--mono); font-size: .85rem; margin-top: 0; }
+
+  footer { margin-top: 110px; border-top: 1px solid var(--line); padding: 40px 0 64px; color: var(--muted); font-size: .9rem; }
+  footer .wrap { display: grid; gap: 14px; }
+  footer p { margin: 0; max-width: 80ch; }
+  footer .tag { font-size: 1.15rem; color: var(--text); font-weight: 600; letter-spacing: -.01em; }
+  footer .fl { display: flex; flex-wrap: wrap; gap: 18px; }
+
+  @media (max-width: 860px) { nav.links { display: none; } .gallery { grid-template-columns: 1fr; } .hero { padding-top: 56px; } }
+  @media (max-width: 520px) { .nav-cta .btn:not(.primary) { display: none; } ol.steps li { padding-left: 62px; } }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
 </style>
 </head>
 <body>
-
 <header class="site">
   <div class="wrap">
-    <div class="brand">Spectra Launcher</div>
-    <nav>
+    <a class="brand" href="#top">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4fe39a"/><stop offset="1" stop-color="#8f7bff"/></linearGradient></defs><path d="M16 3 29 27H3z" fill="url(#lg)"/><path d="M16 3 22 27H10z" fill="#fff" fill-opacity=".28"/></svg>
+      Spectra
+    </a>
+    <nav class="links">
+      <a href="#about">About</a>
       <a href="#features">Features</a>
+      <a href="#gallery">Gallery</a>
       <a href="#how">How it works</a>
+      <a href="#community">Source</a>
       <a href="#privacy">Privacy</a>
-      <a href="https://github.com/mcpacks-site/Spectra-launcher">Source code</a>
     </nav>
+    <div class="nav-cta">
+      <a class="btn sm" href="https://github.com/mcpacks-site/Spectra-launcher">GitHub</a>
+      <a class="btn sm primary" href="https://github.com/mcpacks-site/Spectra-launcher/releases/latest">Download</a>
+    </div>
   </div>
 </header>
 
-<main>
+<main id="top">
   <div class="wrap">
-
     <div class="hero">
-      <h1>A free, open-source launcher for Minecraft.</h1>
+      <span class="eyebrow"><span class="tag">FREE</span> Open source &middot; MIT licensed &middot; Windows, macOS, Linux</span>
+      <h1>The Minecraft launcher, <span class="grad">made simple.</span></h1>
       <p class="lead">Create separate game instances, install mods and their dependencies with a click, and play Minecraft: Java Edition with Vanilla, Fabric, Quilt, Forge or NeoForge. Sign in with your own Microsoft account.</p>
       <div class="btns">
-        <a class="btn primary" href="https://github.com/mcpacks-site/Spectra-launcher/releases">Download</a>
-        <a class="btn ghost" href="https://github.com/mcpacks-site/Spectra-launcher">View source on GitHub</a>
+        <a class="btn primary lg" href="https://github.com/mcpacks-site/Spectra-launcher/releases/latest">Download the launcher</a>
+        <a class="btn lg" href="https://github.com/mcpacks-site/Spectra-launcher">View on GitHub</a>
       </div>
+      <div class="dl">
+        <a href="https://github.com/mcpacks-site/Spectra-launcher/releases/latest">Windows <small>.zip</small></a>
+        <a href="https://github.com/mcpacks-site/Spectra-launcher/releases/latest">macOS <small>.dmg</small></a>
+        <a href="https://github.com/mcpacks-site/Spectra-launcher/releases/latest">Linux <small>.zip</small></a>
+      </div>
+      <div class="shot-hero"><div class="frame"><img src="screenshots/instances.png" alt="Spectra Launcher instance list" width="1180" height="740"></div></div>
+      <div class="note">The apps are not code-signed yet, so Windows SmartScreen or macOS Gatekeeper may warn about an unrecognised publisher. On Windows click <b>More info</b>, then <b>Run anyway</b>. On macOS right-click the app and choose <b>Open</b> the first time.</div>
     </div>
 
+    <section id="about">
+      <p class="kicker">About</p>
+      <h2>Everything you need, nothing you don't.</h2>
+      <p class="sub">Spectra is a small launcher that sets up the game, the mod loader and Java for you, then gets out of the way. Your data stays on your computer.</p>
+      <div class="grid g3">
+        <div class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></svg></div><h3>Your own account</h3><p>Sign in with the Microsoft account that owns Minecraft: Java Edition. No license, authentication or safety checks are bypassed or disabled.</p></div>
+        <div class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div><h3>Native on three platforms</h3><p>Windows, macOS and Linux builds from the same code, built in the open by GitHub Actions.</p></div>
+        <div class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-5 4 5 4M16 8l5 4-5 4M14 5l-4 14"/></svg></div><h3>Open source</h3><p>MIT licensed, a single readable file, and no servers of ours in the middle. Read it, fork it, change it.</p></div>
+      </div>
+      <div class="chips" style="margin-top:28px"><span class="chip on">Vanilla</span><span class="chip on">Fabric</span><span class="chip on">Quilt</span><span class="chip on">Forge</span><span class="chip on">NeoForge</span></div>
+    </section>
+
     <section id="features">
-      <h2>Features</h2>
-      <div class="grid">
-        <div class="card">
-          <h3>Instances</h3>
-          <p>Keep separate installs with their own Minecraft version, mods, memory and Java settings.</p>
-        </div>
-        <div class="card">
-          <h3>Automatic setup</h3>
-          <p>Downloads the game files, your mod loader and a matching Java runtime for you.</p>
-        </div>
-        <div class="card">
-          <h3>Mod manager</h3>
-          <p>Search Modrinth, install mods with their required dependencies, and enable, disable or remove them.</p>
-        </div>
-        <div class="card">
-          <h3>Your own account</h3>
-          <p>Sign in with the Microsoft account that owns Minecraft: Java Edition. No license checks are bypassed.</p>
-        </div>
+      <p class="kicker">Features</p>
+      <h2>Built for how you actually play.</h2>
+      <p class="sub">From a first vanilla world to a hundred-mod pack, each instance keeps its own version, loader, files and settings.</p>
+      <div class="grid g4">
+        <div class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div><h3>Instances</h3><p>Keep separate installs with their own Minecraft version, mods, memory and Java settings. Duplicate, export and import them.</p></div>
+        <div class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 20h16"/></svg></div><h3>Automatic setup</h3><p>Downloads the game files, your mod loader and a matching Java runtime for you.</p></div>
+        <div class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></div><h3>Mod manager</h3><p>Search Modrinth or CurseForge, install mods with their required dependencies, and enable, disable or remove them. Resource packs, shaders and datapacks too.</p></div>
+        <div class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="m3 7 9 5 9-5M12 12v10"/></svg></div><h3>Modpacks</h3><p>Install a Modrinth or CurseForge modpack as a new instance, or import one from Prism, MultiMC or a modpack file.</p></div>
+        <div class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="3" width="10" height="9" rx="1"/><path d="M5 21v-5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v5"/></svg></div><h3>Skins and capes</h3><p>Apply a skin, import your current one, or design one in the skin maker with a rotatable 3D preview. Equip capes you own.</p></div>
+        <div class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 7v5l3 2"/></svg></div><h3>Worlds and backups</h3><p>Back up and restore worlds, browse screenshots, and see how long you've played.</p></div>
+        <div class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m4 4 7 16 2-7 7-2z"/></svg></div><h3>Custom cursors</h3><p>Pick a pointer style for the launcher, and optionally for the game itself.</p></div>
+        <div class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/></svg></div><h3>Dark and light</h3><p>Switch themes and pick an accent colour. Set window size, fullscreen or a server to join per instance.</p></div>
+      </div>
+    </section>
+
+    <section id="gallery">
+      <p class="kicker">Gallery</p>
+      <h2>A look around.</h2>
+      <p class="sub">Screenshots of the launcher itself.</p>
+      <div class="gallery">
+        <figure><div class="frame"><img src="screenshots/loaders.png" alt="Creating an instance with a mod loader" loading="lazy"></div><figcaption><b>New instance.</b> Pick Vanilla or a loader, then a version.</figcaption></figure>
+        <figure><div class="frame"><img src="screenshots/skin-maker.png" alt="The skin maker" loading="lazy"></div><figcaption><b>Skin maker.</b> Paint on the texture or straight on the 3D model.</figcaption></figure>
+        <figure><div class="frame"><img src="screenshots/capes.png" alt="Capes page" loading="lazy"></div><figcaption><b>Skins and capes.</b> Preview and equip what you own.</figcaption></figure>
+        <figure><div class="frame"><img src="screenshots/worlds.png" alt="Worlds and backups" loading="lazy"></div><figcaption><b>Worlds and backups.</b> Safe copies of your worlds, one click to restore.</figcaption></figure>
+        <figure style="grid-column:1/-1"><div class="frame"><img src="screenshots/light-theme.png" alt="Light theme" loading="lazy"></div><figcaption><b>Light theme.</b> Five accent colours, dark or light.</figcaption></figure>
       </div>
     </section>
 
     <section id="how">
-      <h2>How it works</h2>
-      <ol>
+      <p class="kicker">How it works</p>
+      <h2>Playing in five steps.</h2>
+      <p class="sub">The first launch downloads everything it needs, which can take a few minutes.</p>
+      <ol class="steps">
         <li>Download the launcher and open it.</li>
         <li>Click <strong>Accounts</strong>, then <strong>Add Microsoft account</strong>. A Microsoft page opens where you enter a short code and sign in. The code is copied to your clipboard for you.</li>
         <li>Click <strong>Add instance</strong>, pick a Minecraft version, and create it.</li>
         <li>Click <strong>Launch</strong>. The first launch downloads everything needed, which can take a few minutes.</li>
         <li>Open an instance's <strong>Settings</strong> to install mods, resource packs, shaders and datapacks, manage worlds, and set window or server options. The <strong>Modpacks</strong> page installs whole Modrinth modpacks.</li>
       </ol>
-      <p><strong>Requirements:</strong> a Microsoft account that owns Minecraft: Java Edition, and an internet connection for the first launch. If you run the Python version you also need Python 3.8 or newer with tkinter.</p>
+      <p class="req"><strong>Requirements:</strong> a Microsoft account that owns Minecraft: Java Edition, and an internet connection for the first launch. If you run the Python version you also need Python 3.8 or newer with tkinter.</p>
+    </section>
+
+    <section id="community">
+      <p class="kicker">Source</p>
+      <h2>Built in the open.</h2>
+      <p class="sub">Report a bug, read the code, or send a fix.</p>
+      <div class="grid g4">
+        <a class="card link-card" href="https://github.com/mcpacks-site/Spectra-launcher"><div><b>Source code</b><em>github.com/mcpacks-site</em></div><span class="arrow">&rarr;</span></a>
+        <a class="card link-card" href="https://github.com/mcpacks-site/Spectra-launcher/releases"><div><b>Releases</b><em>All versions and downloads</em></div><span class="arrow">&rarr;</span></a>
+        <a class="card link-card" href="https://github.com/mcpacks-site/Spectra-launcher/issues"><div><b>Issues</b><em>Report a problem or ask for a feature</em></div><span class="arrow">&rarr;</span></a>
+        <a class="card link-card" href="https://github.com/mcpacks-site/Spectra-launcher/blob/main/LICENSE"><div><b>MIT license</b><em>Free to use and modify</em></div><span class="arrow">&rarr;</span></a>
+      </div>
     </section>
 
     <section id="privacy" class="policy">
-      <h2>Privacy policy</h2>
+      <p class="kicker">Privacy</p>
+      <h2>Privacy policy.</h2>
+      <div class="doc">
       <p>Last updated: October 12, 2026</p>
       <p>Spectra Launcher runs entirely on your computer. We do not run any servers, and we do not collect, receive or store any of your data.</p>
 
@@ -142,6 +266,7 @@
         <li>Mojang, to download the game files</li>
         <li>Fabric, Quilt, Forge and NeoForge, to download the mod loader and its version lists</li>
         <li>Modrinth, to search for and download mods</li>
+        <li>CurseForge, only if you add an API key in Settings, to search for and download mods and modpacks</li>
         <li>Adoptium, to download Java if you do not have a suitable version</li>
         <li>Mojang skin servers, only when you apply or import a skin</li>
       </ul>
@@ -151,18 +276,18 @@
       <p>Sign-in uses Microsoft's standard device code flow with the scope <code>XboxLive.signin offline_access</code>. We never see your Microsoft password.</p>
 
       <h3>Contact</h3>
-      <p><a href="mailto:hilderbrandzachary@gmail.com">support@mcpacks.site</a></p>
+      <p><a href="mailto:hilderbrandzachary@gmail.com">hilderbrandzachary@gmail.com</a></p>
+    
+      </div>
     </section>
-
   </div>
 </main>
-
 <footer>
   <div class="wrap">
+    <p class="tag">Play Minecraft your way.</p>
     <p>Spectra Launcher is free and open source. It is not an official Minecraft product and is not approved by or associated with Mojang or Microsoft. It is not affiliated with the Fabric, Quilt, Forge or NeoForge projects.</p>
-    <p><a href="https://github.com/mcpacks-site/Spectra-launcher">Source code</a> &middot; <a href="#privacy">Privacy policy</a> &middot; <a href="mailto:hilderbrandzachary@gmail.com">Contact</a></p>
+    <div class="fl"><a href="https://github.com/mcpacks-site/Spectra-launcher">Source code</a><a href="#privacy">Privacy policy</a><a href="mailto:hilderbrandzachary@gmail.com">Contact</a></div>
   </div>
 </footer>
-
 </body>
 </html>
