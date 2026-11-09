@@ -666,6 +666,411 @@ def install_modrinth_pack(project, log, progress=None):
     return install_mrpack(dest, log, progress)
 
 
+# --------------------------------------------------------------------------
+# CurseForge (needs the user's own API key) and imports from other launchers
+# --------------------------------------------------------------------------
+CURSEFORGE = "https://api.curseforge.com/v1"
+CF_GAME = 432
+CF_CLASS = {"mods": 6, "modpack": 4471, "resourcepack": 12, "shader": 6552, "datapack": 6945}
+CF_FOLDER = {6: "mods", 12: "resourcepacks", 6552: "shaderpacks"}
+CF_LOADER = {"forge": 1, "fabric": 4, "quilt": 5, "neoforge": 6}
+CF_KEY = os.environ.get("SPECTRA_CURSEFORGE_KEY", "").strip()
+
+
+class CFBlocked(IOError):
+    """The author turned off third-party downloads for this file."""
+
+
+def set_cf_key(key):
+    global CF_KEY
+    CF_KEY = (key or "").strip()
+
+
+def cf_request(path, params=None, data=None):
+    if not CF_KEY:
+        raise IOError("Add your CurseForge API key in Settings first.")
+    url = CURSEFORGE + path + ("?" + urllib.parse.urlencode(params, doseq=True) if params else "")
+    status, body = http_json(url, data=data, headers={"x-api-key": CF_KEY}, timeout=40)
+    if status in (401, 403):
+        raise IOError("CurseForge rejected the API key. Check it in Settings.")
+    if status == 429:
+        raise IOError("CurseForge is rate limiting requests. Try again in a minute.")
+    if status >= 400:
+        raise IOError(f"CurseForge returned error {status}.")
+    return body
+
+
+def cf_search(kind, query, mc=None, loader=None, limit=25):
+    p = {"gameId": CF_GAME, "classId": CF_CLASS[kind], "searchFilter": query, "sortField": 2, "sortOrder": "desc",
+         "pageSize": limit}
+    if mc and kind != "modpack":
+        p["gameVersion"] = mc
+    if kind == "mods" and loader in CF_LOADER:
+        p["modLoaderType"] = CF_LOADER[loader]
+    out = []
+    for m in cf_request("/mods/search", p).get("data", []):
+        out.append({"id": str(m["id"]), "title": m["name"], "downloads": int(m.get("downloadCount", 0)),
+                    "description": m.get("summary", ""), "blocked": m.get("allowModDistribution") is False,
+                    "url": (m.get("links") or {}).get("websiteUrl", "")})
+    return out
+
+
+def cf_files(mod_id, mc=None, loader=None):
+    """Newest-first list of client files for a project that match the Minecraft version and loader."""
+    kinds = [None]
+    if loader in CF_LOADER:
+        kinds = [CF_LOADER[loader]] + ([CF_LOADER["fabric"]] if loader == "quilt" else [])
+    for lt in kinds:
+        p = {"pageSize": 50}
+        if mc:
+            p["gameVersion"] = mc
+        if lt:
+            p["modLoaderType"] = lt
+        files = [f for f in cf_request(f"/mods/{mod_id}/files", p).get("data", []) if not f.get("isServerPack")]
+        if files:
+            return sorted(files, key=lambda f: f.get("fileDate", ""), reverse=True)
+    return []
+
+
+def cf_pick(files):
+    return next((f for f in files if f.get("releaseType") == 1), files[0]) if files else None
+
+
+def cf_site(mod_id):
+    try:
+        return (cf_request(f"/mods/{mod_id}").get("data", {}).get("links") or {}).get("websiteUrl", "")
+    except IOError:
+        return ""
+
+
+def cf_download_file(f, dest_dir: Path, mod_id=None):
+    url = f.get("downloadUrl")
+    if not url:
+        raise CFBlocked(f"{f.get('fileName', 'This file')} can't be downloaded by launchers because its author "
+                        f"turned off third-party downloads. Get it from {cf_site(mod_id) if mod_id else 'CurseForge'}"
+                        f" and drop it into the {dest_dir.name} folder.")
+    sha1 = next((h["value"] for h in f.get("hashes", []) if h.get("algo") == 1), None)
+    return download(url, dest_dir / f["fileName"], sha1, f.get("fileLength"))
+
+
+def cf_install_mod(mc, mod_id, mods_dir: Path, installed: dict, log, seen=None, loader="fabric"):
+    """Install the newest build of a CurseForge project plus its required dependencies."""
+    seen = seen if seen is not None else set()
+    mod_id = str(mod_id)
+    if mod_id in seen:
+        return
+    seen.add(mod_id)
+    f = cf_pick(cf_files(mod_id, mc, loader))
+    if not f:
+        log(f"No {LOADERS.get(loader, loader)} build of CurseForge project {mod_id} for Minecraft {mc}.")
+        return
+    mods_dir.mkdir(parents=True, exist_ok=True)
+    key = f"cf:{mod_id}"
+    old = installed.get(key)
+    try:
+        if old and old != f["fileName"]:
+            for suffix in ("", ".disabled"):
+                p = mods_dir / (old + suffix)
+                if p.exists():
+                    p.unlink()
+        new = cf_download_file(f, mods_dir, mod_id)
+    except CFBlocked as e:
+        log(f"WARNING: {e}")
+        return
+    installed[key] = f["fileName"]
+    log(f"{f.get('displayName') or mod_id}: {f['fileName']} " + ("downloaded." if new else "up to date."))
+    for d in f.get("dependencies", []):
+        if d.get("relationType") == 3:
+            cf_install_mod(mc, d["modId"], mods_dir, installed, log, seen, loader)
+
+
+def cf_install_content(mc, mod_id, dest_dir: Path, log):
+    """Resource pack / shader / datapack from CurseForge. Returns the file name or None."""
+    f = cf_pick(cf_files(mod_id, mc))
+    if not f:
+        log(f"No build of CurseForge project {mod_id} for Minecraft {mc}.")
+        return None
+    try:
+        new = cf_download_file(f, dest_dir, mod_id)
+    except CFBlocked as e:
+        log(f"WARNING: {e}")
+        return None
+    log(f"{f.get('displayName') or mod_id}: {f['fileName']} " + ("downloaded." if new else "already installed."))
+    return f["fileName"]
+
+
+def _chunks(seq, n):
+    seq = list(seq)
+    for i in range(0, len(seq), n):
+        yield seq[i:i + n]
+
+
+def cf_loader_from_id(loader_id):
+    """'forge-47.2.0' -> ('forge', '47.2.0')."""
+    name, _, ver = (loader_id or "").partition("-")
+    return (name, ver) if name in CF_LOADER else ("vanilla", None)
+
+
+def install_cf_pack(path, log, progress=None):
+    """Create an instance from a CurseForge modpack zip (manifest.json + overrides). Returns the instance.
+    Files whose authors forbid third-party downloads are listed in inst['pending_manual']."""
+    path = Path(path)
+    with zipfile.ZipFile(path) as z:
+        try:
+            man = json.loads(z.read("manifest.json"))
+        except KeyError:
+            raise IOError("This is not a CurseForge modpack (manifest.json is missing).")
+        mc = (man.get("minecraft") or {}).get("version")
+        if not mc:
+            raise IOError("The modpack does not say which Minecraft version it uses.")
+        loaders = (man.get("minecraft") or {}).get("modLoaders") or []
+        pick = next((m for m in loaders if m.get("primary")), loaders[0] if loaders else {})
+        loader, lv = cf_loader_from_id(pick.get("id"))
+        name = man.get("name") or path.stem
+        entries = [f for f in man.get("files", []) if f.get("required", True)]
+        inst = {"id": new_instance_id(name), "name": name, "version": mc, "loader": loader,
+                "ram_gb": 6 if len(entries) > 60 else 4, "java": "", "jvm_args": "", "auto_fabric_api": False,
+                "mods": {}, "modpack": {"name": name, "version": str(man.get("version", "")), "source": "curseforge"}}
+        if lv:
+            inst["loader_version"] = lv
+        gdir = game_dir_of(inst)
+        gdir.mkdir(parents=True, exist_ok=True)
+        log(f"Installing CurseForge pack '{name}' (Minecraft {mc}, {LOADERS[loader]}, {len(entries)} files)...")
+        file_ids = [f["fileID"] for f in entries]
+        mod_ids = sorted({f["projectID"] for f in entries})
+        files, projects = {}, {}
+        for part in _chunks(file_ids, 200):
+            for f in cf_request("/mods/files", data={"fileIds": part}).get("data", []):
+                files[f["id"]] = f
+        for part in _chunks(mod_ids, 200):
+            for m in cf_request("/mods", data={"modIds": part}).get("data", []):
+                projects[m["id"]] = m
+        jobs, pending = [], []
+        for e in entries:
+            f, proj = files.get(e["fileID"]), projects.get(e["projectID"], {})
+            folder = CF_FOLDER.get(proj.get("classId"), "mods")
+            site = (proj.get("links") or {}).get("websiteUrl", "")
+            if not f:
+                pending.append({"name": proj.get("name") or str(e["projectID"]), "folder": folder, "url": site,
+                                "file": ""})
+            elif not f.get("downloadUrl"):
+                pending.append({"name": proj.get("name") or f.get("displayName", ""), "folder": folder, "url": site,
+                                "file": f.get("fileName", "")})
+            else:
+                sha1 = next((h["value"] for h in f.get("hashes", []) if h.get("algo") == 1), None)
+                jobs.append((f["downloadUrl"], _safe_dest(gdir, f"{folder}/{f['fileName']}"), sha1, f.get("fileLength")))
+
+        def fetch(job):
+            url, dest, sha1, size = job
+            download(url, dest, sha1, size)
+        done = 0
+        with ThreadPoolExecutor(8) as ex:
+            for fut in as_completed([ex.submit(fetch, j) for j in jobs]):
+                fut.result()
+                done += 1
+                if progress and (done % 3 == 0 or done == len(jobs)):
+                    progress(done, len(jobs), "Modpack files")
+        prefix = (man.get("overrides") or "overrides").strip("/") + "/"
+        for info in z.infolist():
+            if info.filename.startswith(prefix) and not info.is_dir():
+                dest = _safe_dest(gdir, info.filename[len(prefix):])
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(info) as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out)
+    if pending:
+        inst["pending_manual"] = pending
+        for p in pending:
+            log(f"WARNING: {p['name']} can't be downloaded automatically. Get it from {p['url'] or 'CurseForge'} "
+                f"and put it in the {p['folder']} folder.")
+    save_instance(inst)
+    log(f"Modpack '{name}' is ready" + (f" ({len(pending)} file(s) need a manual download)." if pending else "."))
+    return inst
+
+
+def install_cf_modpack(mod_id, log, progress=None):
+    """Download the newest client file of a CurseForge modpack project and install it."""
+    f = cf_pick(cf_files(mod_id))
+    if not f:
+        raise IOError("This modpack has no downloadable files.")
+    dest = ROOT / "packs"
+    cf_download_file(f, dest, mod_id)
+    return install_cf_pack(dest / f["fileName"], log, progress)
+
+
+# ---- other launchers: Prism / PolyMC / MultiMC and the CurseForge app
+def _cfg_value(text, key):
+    m = re.search(rf"^{re.escape(key)}=(.*)$", text, re.M)
+    return m.group(1).strip() if m else ""
+
+
+def read_prism_meta(cfg_text, pack_json):
+    """-> (name, mc, loader, loader_version, ram_gb, jvm_args) from instance.cfg + mmc-pack.json."""
+    mc, loader, lv = None, "vanilla", None
+    for c in pack_json.get("components", []):
+        uid, ver = c.get("uid"), c.get("version")
+        if uid == "net.minecraft":
+            mc = ver
+        elif uid == "net.fabricmc.fabric-loader":
+            loader, lv = "fabric", ver
+        elif uid == "org.quiltmc.quilt-loader":
+            loader, lv = "quilt", ver
+        elif uid == "net.minecraftforge":
+            loader, lv = "forge", ver
+        elif uid == "net.neoforged":
+            loader, lv = "neoforge", ver
+    mem = _cfg_value(cfg_text, "MaxMemAlloc")
+    ram = round(int(mem) / 1024, 1) if mem.isdigit() else 4
+    return _cfg_value(cfg_text, "name") or "Imported instance", mc, loader, lv, ram, _cfg_value(cfg_text, "JvmArgs")
+
+
+def _new_imported(name, mc, loader, lv, ram, jvm, source):
+    inst = {"id": new_instance_id(name), "name": name, "version": mc, "loader": loader, "ram_gb": max(1, ram),
+            "java": "", "jvm_args": jvm, "auto_fabric_api": False, "mods": {}, "modpack": {"name": name, "source": source}}
+    if lv:
+        inst["loader_version"] = lv
+    return inst
+
+
+def import_prism_zip(path, log=None):
+    """Import an instance exported from Prism Launcher, PolyMC or MultiMC."""
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
+        cfg = next((n for n in names if n.endswith("instance.cfg") and n.count("/") <= 1), None)
+        if not cfg:
+            raise IOError("This is not a Prism/MultiMC instance export (instance.cfg is missing).")
+        base = cfg[:-len("instance.cfg")]
+        try:
+            pack = json.loads(z.read(base + "mmc-pack.json"))
+        except KeyError:
+            raise IOError("The export has no mmc-pack.json, so the Minecraft version is unknown.")
+        name, mc, loader, lv, ram, jvm = read_prism_meta(z.read(cfg).decode("utf-8", "replace"), pack)
+        if not mc:
+            raise IOError("The export does not say which Minecraft version it uses.")
+        inst = _new_imported(name, mc, loader, lv, ram, jvm, "prism")
+        gdir = game_dir_of(inst)
+        gdir.mkdir(parents=True, exist_ok=True)
+        for sub in (".minecraft/", "minecraft/"):
+            if any(n.startswith(base + sub) for n in names):
+                for info in z.infolist():
+                    if info.filename.startswith(base + sub) and not info.is_dir():
+                        dest = _safe_dest(gdir, info.filename[len(base + sub):])
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        with z.open(info) as src, open(dest, "wb") as out:
+                            shutil.copyfileobj(src, out)
+                break
+    save_instance(inst)
+    if log:
+        log(f"Imported '{name}' (Minecraft {mc}, {LOADERS[loader]}).")
+    return inst
+
+
+COPY_SKIP = shutil.ignore_patterns("logs", "crash-reports", ".cache", "minecraftinstance.json", "*.part")
+
+
+def _launcher_roots():
+    h = Path.home()
+    appdata = Path(os.environ.get("APPDATA", h / "AppData" / "Roaming"))
+    if OS == "windows":
+        prism = [("Prism Launcher", appdata / "PrismLauncher"), ("PolyMC", appdata / "PolyMC")]
+        cf = [h / "curseforge" / "minecraft" / "Instances"]
+    elif OS == "macos":
+        s = h / "Library" / "Application Support"
+        prism = [("Prism Launcher", s / "PrismLauncher"), ("PolyMC", s / "PolyMC"), ("MultiMC", s / "MultiMC")]
+        cf = [h / "Documents" / "curseforge" / "minecraft" / "Instances", h / "curseforge" / "minecraft" / "Instances"]
+    else:
+        d = h / ".local" / "share"
+        prism = [("Prism Launcher", d / "PrismLauncher"), ("Prism Launcher", h / ".var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher"),
+                 ("PolyMC", d / "PolyMC"), ("MultiMC", d / "multimc")]
+        cf = []
+    return prism, cf
+
+
+def scan_other_launchers():
+    """Instances found in launchers installed on this computer: dicts with launcher/name/path/mc/loader/kind."""
+    prism, cf = _launcher_roots()
+    found = []
+    for label, root in prism:
+        inst_dir = root / "instances"
+        if not inst_dir.is_dir():
+            continue
+        for d in sorted(inst_dir.iterdir()):
+            try:
+                if (d / "instance.cfg").is_file() and (d / "mmc-pack.json").is_file():
+                    name, mc, loader, *_ = read_prism_meta((d / "instance.cfg").read_text(errors="replace"),
+                                                           json.loads((d / "mmc-pack.json").read_text()))
+                    found.append({"launcher": label, "name": name, "path": str(d), "mc": mc or "?",
+                                  "loader": LOADERS[loader], "kind": "prism"})
+            except (OSError, ValueError):
+                pass
+    for root in cf:
+        if not root.is_dir():
+            continue
+        for d in sorted(root.iterdir()):
+            try:
+                j = json.loads((d / "minecraftinstance.json").read_text())
+                loader, _ = cf_loader_from_id((j.get("baseModLoader") or {}).get("name"))
+                found.append({"launcher": "CurseForge app", "name": j.get("name") or d.name, "path": str(d),
+                              "mc": j.get("gameVersion", "?"), "loader": LOADERS[loader], "kind": "curseforge"})
+            except (OSError, ValueError):
+                pass
+    return found
+
+
+def import_launcher_instance(entry, log=None):
+    """Copy an instance found by scan_other_launchers() into Spectra."""
+    d = Path(entry["path"])
+    if entry["kind"] == "prism":
+        name, mc, loader, lv, ram, jvm = read_prism_meta((d / "instance.cfg").read_text(errors="replace"),
+                                                        json.loads((d / "mmc-pack.json").read_text()))
+        src = next((d / s for s in (".minecraft", "minecraft") if (d / s).is_dir()), None)
+        inst = _new_imported(name, mc, loader, lv, ram, jvm, "prism")
+    else:
+        j = json.loads((d / "minecraftinstance.json").read_text())
+        loader, lv = cf_loader_from_id((j.get("baseModLoader") or {}).get("name"))
+        ram = round(int(j.get("allocatedMemory") or 4096) / 1024, 1)
+        inst = _new_imported(j.get("name") or d.name, j["gameVersion"], loader, lv, ram, "", "curseforge")
+        src = d
+    if not src:
+        raise IOError("Could not find this instance's game folder.")
+    shutil.copytree(src, game_dir_of(inst), ignore=COPY_SKIP)
+    save_instance(inst)
+    if log:
+        log(f"Imported '{inst['name']}' from {entry['launcher']}.")
+    return inst
+
+
+def detect_pack(path):
+    """What kind of modpack/instance file is this? mrpack, curseforge, prism, spectra, or None."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = set(z.namelist())
+            if "modrinth.index.json" in names:
+                return "mrpack"
+            if "spectra-export.json" in names:
+                return "spectra"
+            if "manifest.json" in names:
+                return "curseforge"
+            if any(n.endswith("instance.cfg") and n.count("/") <= 1 for n in names):
+                return "prism"
+    except zipfile.BadZipFile:
+        pass
+    return None
+
+
+def import_any(path, log, progress=None):
+    kind = detect_pack(path)
+    if kind == "mrpack":
+        return install_mrpack(path, log, progress)
+    if kind == "curseforge":
+        return install_cf_pack(path, log, progress)
+    if kind == "prism":
+        return import_prism_zip(path, log)
+    if kind == "spectra":
+        return import_instance_zip(path)
+    raise IOError("Spectra can't read this file. It supports Modrinth (.mrpack), CurseForge, Prism/MultiMC/PolyMC "
+                  "and Spectra exports.")
+
+
 def duplicate_instance(inst, new_name):
     new = dict(inst)
     new.update(id=new_instance_id(new_name), name=new_name)
@@ -1824,7 +2229,8 @@ class EditInstanceDialog(Dialog):
         top.pack(fill="x", padx=32, pady=(26, 0))
         self.title_lbl = lbl(top, inst["name"], 20, "bold")
         self.title_lbl.pack(anchor="w")
-        lbl(top, f"Minecraft {inst['version']}  ·  {loader_label(inst)}  ·  played {fmt_playtime(inst.get('playtime_s'))}",
+        lbl(top, f"Minecraft {inst['version']}  ·  {loader_label(inst)}  ·  " + (
+            f"played {fmt_playtime(inst['playtime_s'])}" if inst.get("playtime_s") else "not played yet"),
             10, color=C["muted"]).pack(anchor="w", pady=(2, 10))
         self.modded = loader_of(inst) != "vanilla"
         self.builders = [("settings", "Settings", self.build_settings)]
@@ -3997,7 +4403,14 @@ class ContentTab(tk.Frame):
 
         rh = tk.Frame(self, bg=C["panel"])
         rh.grid(row=0, column=1, sticky="ew", padx=(12, 0), pady=(0, 8))
-        field_label(rh, "Browse Modrinth").pack(side="left")
+        self.source, self.src_btns = "modrinth", {}
+        sb = tk.Frame(rh, bg=C["panel"])
+        sb.pack(side="left")
+        for key, name in (("modrinth", "Modrinth"), ("curseforge", "CurseForge")):
+            b = Btn(sb, name, lambda k=key: self.set_source(k), "primary" if key == "modrinth" else "secondary",
+                    h=30, size=9, bg=C["panel"])
+            b.pack(side="left", padx=(0, 6))
+            self.src_btns[key] = b
         rb, self.res = tree_box(self, ("title", "dl", "desc"), (self.cfg["noun"].upper(), "DOWNLOADS", "DESCRIPTION"),
                                 (150, 90, 220), "desc")
         rb.grid(row=1, column=1, sticky="nsew", padx=(12, 0))
@@ -4077,6 +4490,36 @@ class ContentTab(tk.Frame):
             save_instance(self.inst)
             self.reload()
 
+    # ---- search sources
+    def set_source(self, key):
+        self.source = key
+        for k, b in self.src_btns.items():
+            b.style = "primary" if k == key else "secondary"
+            b.draw()
+        self.res.delete(*self.res.get_children())
+        self.msg.config(text=f"Searching {'CurseForge' if key == 'curseforge' else 'Modrinth'}…" if self.q.get().strip()
+                        else f"Type a name and press Search to browse {'CurseForge' if key == 'curseforge' else 'Modrinth'}.")
+        if self.q.get().strip():
+            self.search()
+
+    def search_cf(self):
+        if not CF_KEY:
+            self.msg.config(text="CurseForge needs an API key. Add yours in Settings (it's free).")
+            return
+        q, mc, loader, kind = self.q.get().strip(), self.inst["version"], loader_of(self.inst), self.kind
+        self.msg.config(text="Searching CurseForge…")
+
+        def done(hits):
+            if not self.winfo_exists() or self.source != "curseforge":
+                return
+            self.res.delete(*self.res.get_children())
+            for h in hits:
+                title = h["title"] + ("  (manual)" if h["blocked"] else "")
+                self.res.insert("", "end", iid=h["id"], values=(title, f"{h['downloads']:,}", h["description"]))
+            self.msg.config(text=f"{len(hits)} result(s) for Minecraft {mc}.")
+        self.app.bg(lambda: cf_search(kind, q, mc, loader), done,
+                    lambda e: self.winfo_exists() and self.msg.config(text=f"Search failed: {e}"))
+
     # ---- Modrinth
     def facets(self):
         v = [f"versions:{self.inst['version']}"]
@@ -4087,13 +4530,15 @@ class ContentTab(tk.Frame):
         return [[f"project_type:{self.kind}"], v]
 
     def search(self):
+        if self.source == "curseforge":
+            return self.search_cf()
         query = self.q.get().strip()
         url = f"{MODRINTH}/search?" + urllib.parse.urlencode(
             {"query": query, "facets": json.dumps(self.facets()), "limit": 25})
         self.msg.config(text="Searching…")
 
         def done(data):
-            if not self.winfo_exists():
+            if not self.winfo_exists() or self.source != "modrinth":
                 return
             self.res.delete(*self.res.get_children())
             for h in data.get("hits", []):
@@ -4112,18 +4557,23 @@ class ContentTab(tk.Frame):
             self.msg.config(text="Create a world in this instance first, then pick it above.")
             return
         mc, dest, tracked, kind = self.inst["version"], self.dest_dir(), self.tracked(), self.kind
-        loader = loader_of(self.inst)
+        loader, cf = loader_of(self.inst), self.source == "curseforge"
+        if cf and not CF_KEY:
+            self.msg.config(text="CurseForge needs an API key. Add yours in Settings (it's free).")
+            return
         self.msg.config(text="Installing…")
 
         def work():
             seen, logs = set(), []
             for pid in sel:
-                if kind == "mods":
+                if kind == "mods" and cf:
+                    cf_install_mod(mc, pid, dest, tracked, logs.append, seen, loader)
+                elif kind == "mods":
                     install_project(mc, pid, dest, tracked, logs.append, seen, loader)
                 else:
-                    fn = install_content(mc, pid, dest, logs.append)
+                    fn = (cf_install_content if cf else install_content)(mc, pid, dest, logs.append)
                     if fn:
-                        tracked[pid] = fn
+                        tracked[f"cf:{pid}" if cf else pid] = fn
             return logs
 
         def done(logs):
@@ -4282,28 +4732,127 @@ class ScreenshotsTab(tk.Frame):
 # --------------------------------------------------------------------------
 # Modpacks page + Settings page
 # --------------------------------------------------------------------------
+class ManualDialog(Dialog):
+    """Files from a CurseForge pack that their authors only allow downloading from curseforge.com."""
+
+    def __init__(self, app, inst):
+        super().__init__(app, "Files to download yourself", 760, 480)
+        self.inst = inst
+        self.items = inst.get("pending_manual", [])
+        lbl(self, f"{len(self.items)} file(s) in '{inst['name']}' can't be downloaded by launchers.", 13, "bold").pack(
+            anchor="w", padx=28, pady=(24, 4))
+        hint(self, "Their authors turned off third-party downloads. Open each page, download the file, and put it in "
+                   "the folder shown. The rest of the pack is already installed.", 700).pack(anchor="w", padx=28)
+        box, self.tree = tree_box(self, ("name", "folder", "file"), ("PROJECT", "FOLDER", "FILE"), (260, 110, 280), "file")
+        box.pack(fill="both", expand=True, padx=28, pady=14)
+        for i, it in enumerate(self.items):
+            self.tree.insert("", "end", iid=str(i), values=(it["name"], it["folder"], it.get("file", "")))
+        bar = tk.Frame(self, bg=C["panel"])
+        bar.pack(fill="x", padx=28, pady=(0, 22))
+        Btn(bar, "Close", self.destroy, "secondary", h=38).pack(side="right")
+        Btn(bar, "Open folder", self.open_folder, "secondary", h=38).pack(side="right", padx=8)
+        Btn(bar, "Open page", self.open_page, "primary", h=38).pack(side="right")
+
+    def _sel(self):
+        s = self.tree.selection()
+        return self.items[int(s[0])] if s else (self.items[0] if self.items else None)
+
+    def open_page(self):
+        it = self._sel()
+        if it and it.get("url"):
+            webbrowser.open(it["url"])
+
+    def open_folder(self):
+        it = self._sel()
+        if it:
+            d = game_dir_of(self.inst) / it["folder"]
+            d.mkdir(parents=True, exist_ok=True)
+            open_path(d)
+
+
+class ImportLaunchersDialog(Dialog):
+    """Lists instances found in Prism, PolyMC, MultiMC and the CurseForge app, and copies them into Spectra."""
+
+    def __init__(self, app, done):
+        super().__init__(app, "Import from other launchers", 760, 500)
+        self.done, self.found = done, []
+        lbl(self, "Import from other launchers", 16, "bold").pack(anchor="w", padx=28, pady=(24, 4))
+        hint(self, "Spectra copies the instance, so your original is left untouched. Instances from launchers it "
+                   "can't find here can be exported as a modpack file and imported with Import file.", 700).pack(
+            anchor="w", padx=28)
+        box, self.tree = tree_box(self, ("launcher", "name", "mc", "loader"),
+                                  ("LAUNCHER", "INSTANCE", "MINECRAFT", "LOADER"), (140, 280, 100, 100), "name")
+        box.pack(fill="both", expand=True, padx=28, pady=14)
+        bar = tk.Frame(self, bg=C["panel"])
+        bar.pack(fill="x", padx=28, pady=(0, 22))
+        self.msg = lbl(bar, "Looking for installed launchers…", 9, color=C["muted"])
+        self.msg.pack(side="left")
+        self.btn = Btn(bar, "Import selected", self.go, "primary", h=40)
+        self.btn.pack(side="right")
+        Btn(bar, "Cancel", self.destroy, "secondary", h=40).pack(side="right", padx=8)
+        app.bg(scan_other_launchers, self.filled, lambda e: self.msg.config(text=f"Scan failed: {e}"))
+
+    def filled(self, found):
+        if not self.winfo_exists():
+            return
+        self.found = found
+        for i, f in enumerate(found):
+            self.tree.insert("", "end", iid=str(i), values=(f["launcher"], f["name"], f["mc"], f["loader"]))
+        self.msg.config(text=f"{len(found)} instance(s) found." if found else
+                        "No Prism, PolyMC, MultiMC or CurseForge app instances were found on this computer.")
+
+    def go(self):
+        sel = [self.found[int(i)] for i in self.tree.selection()]
+        if not sel:
+            self.msg.config(text="Select one or more instances first.")
+            return
+        self.btn.set_enabled(False)
+        self.msg.config(text="Copying… large instances can take a minute.")
+
+        def work():
+            return [import_launcher_instance(e, self.app.log) for e in sel]
+        self.app.bg(work, self.finish, self.fail)
+
+    def finish(self, insts):
+        self.destroy()
+        self.done(insts)
+
+    def fail(self, e):
+        if self.winfo_exists():
+            self.btn.set_enabled(True)
+            self.msg.config(text=f"Import failed: {e}")
+        self.app.log(f"ERROR: {e}")
+
+
 class ModpacksPage(tk.Frame):
     def __init__(self, master, app):
         super().__init__(master, bg=C["bg"])
-        self.app, self.loaded = app, False
-        _, right, _ = app.header(self, "Modpacks", "Install a whole modpack from Modrinth as a new instance.")
+        self.app, self.loaded, self.source = app, False, "modrinth"
+        _, right, _ = app.header(self, "Modpacks", "Install a whole modpack from Modrinth or CurseForge as a new instance.")
         Btn(right, "Import file…", self.import_file, "secondary", h=42).pack(side="right")
+        Btn(right, "From other launchers…", self.import_launchers, "secondary", h=42).pack(side="right", padx=(0, 8))
         body = tk.Frame(self, bg=C["bg"])
         body.pack(fill="both", expand=True, padx=32, pady=(6, 20))
         bar = tk.Frame(body, bg=C["bg"])
         bar.pack(fill="x", pady=(0, 10))
         self.q = tk.StringVar()
         Btn(bar, "Search", self.search, "secondary", h=38, bg=C["bg"]).pack(side="right", padx=(8, 0))
+        self.src_btns = {}
+        for key, name in (("modrinth", "Modrinth"), ("curseforge", "CurseForge")):
+            b = Btn(bar, name, lambda k=key: self.set_source(k), "primary" if key == "modrinth" else "secondary",
+                    h=38, bg=C["bg"])
+            b.pack(side="left", padx=(0, 6))
+            self.src_btns[key] = b
         e = entry(bar, self.q, bg=C["card2"])
-        e.pack(side="left", fill="x", expand=True)
+        e.pack(side="left", fill="x", expand=True, padx=(6, 0))
         e.entry.bind("<Return>", lambda _e: self.search())
         foot = tk.Frame(body, bg=C["bg"])
         foot.pack(side="bottom", fill="x", pady=(12, 0))
         box, self.res = tree_box(body, ("title", "dl", "mc", "desc"), ("MODPACK", "DOWNLOADS", "MINECRAFT", "DESCRIPTION"),
                                  (210, 100, 90, 360), "desc", height=8)
         box.pack(fill="both", expand=True)
-        self.msg = lbl(foot, "Modpacks are installed as a new instance. Importing .mrpack files and Spectra "
-                             "exports works too.", 9, color=C["muted"], bg=C["bg"])
+        self.msg = lbl(foot, "Modpacks are installed as a new instance. Import files from Modrinth, CurseForge, "
+                             "Prism, MultiMC or Spectra.", 9, color=C["muted"], bg=C["bg"])
         self.msg.pack(side="left")
         self.btn = Btn(foot, "Install selected", self.install, "primary", h=42, bg=C["bg"])
         self.btn.pack(side="right")
@@ -4314,13 +4863,25 @@ class ModpacksPage(tk.Frame):
             self.loaded = True
             self.search()
 
+    def set_source(self, key):
+        self.source = key
+        for k, b in self.src_btns.items():
+            b.style = "primary" if k == key else "secondary"
+            b.draw()
+        self.res.delete(*self.res.get_children())
+        self.search()
+
     def search(self):
+        if self.source == "curseforge":
+            return self.search_cf()
         facets = json.dumps([["project_type:modpack"]])
         url = f"{MODRINTH}/search?" + urllib.parse.urlencode(
             {"query": self.q.get().strip(), "facets": facets, "limit": 40, "index": "downloads"})
         self.msg.config(text="Searching…")
 
         def done(data):
+            if self.source != "modrinth":
+                return
             self.res.delete(*self.res.get_children())
             self.hits = {}
             for h in data.get("hits", []):
@@ -4331,12 +4892,32 @@ class ModpacksPage(tk.Frame):
             self.msg.config(text=f"{len(data.get('hits', []))} modpack(s).")
         self.app.bg(lambda: get_json(url), done, lambda e: self.msg.config(text=f"Search failed: {e}"))
 
+    def search_cf(self):
+        if not CF_KEY:
+            self.res.delete(*self.res.get_children())
+            self.msg.config(text="CurseForge needs an API key. Add yours in Settings (it's free).")
+            return
+        q = self.q.get().strip()
+        self.msg.config(text="Searching CurseForge…")
+
+        def done(hits):
+            if self.source != "curseforge":
+                return
+            self.res.delete(*self.res.get_children())
+            for h in hits:
+                title = h["title"] + ("  (manual)" if h["blocked"] else "")
+                self.res.insert("", "end", iid=h["id"], values=(title, f"{h['downloads']:,}", "", h["description"]))
+            self.msg.config(text=f"{len(hits)} modpack(s) from CurseForge.")
+        self.app.bg(lambda: cf_search("modpack", q, limit=40), done, lambda e: self.msg.config(text=f"Search failed: {e}"))
+
     def finish(self, inst):
         self.app.q.put(("status", "Ready", 0))
         self.btn.set_enabled(True)
         self.app.refresh_instances(select=inst["id"])
         self.app.show_page("instances")
         self.app.toast(f"Installed {inst['name']}")
+        if inst.get("pending_manual"):
+            ManualDialog(self.app, inst)
 
     def fail(self, e):
         self.app.q.put(("status", "Ready", 0))
@@ -4351,41 +4932,51 @@ class ModpacksPage(tk.Frame):
             return
         self.btn.set_enabled(False)
         self.msg.config(text="Installing… watch the bar at the bottom. Large packs can take a while.")
-        self.app.bg(lambda: install_modrinth_pack(sel[0], self.app.log, self.app.progress), self.finish, self.fail)
+        fn = install_cf_modpack if self.source == "curseforge" else install_modrinth_pack
+        self.app.bg(lambda: fn(sel[0], self.app.log, self.app.progress), self.finish, self.fail)
 
     def import_file(self):
         p = filedialog.askopenfilename(parent=self.app.root, title="Import a modpack or instance",
                                        filetypes=[("Modpack or instance", "*.mrpack *.zip"), ("All files", "*.*")])
         if not p:
             return
-
-        def work():
-            with zipfile.ZipFile(p) as z:
-                spectra = "spectra-export.json" in z.namelist()
-            return import_instance_zip(p) if spectra else install_mrpack(p, self.app.log, self.app.progress)
         self.btn.set_enabled(False)
-        self.app.bg(work, self.finish, self.fail)
+        self.app.bg(lambda: import_any(p, self.app.log, self.app.progress), self.finish, self.fail)
+
+    def import_launchers(self):
+        ImportLaunchersDialog(self.app, self.imported)
+
+    def imported(self, insts):
+        self.app.refresh_instances(select=insts[-1]["id"])
+        self.app.show_page("instances")
+        self.app.toast(f"Imported {len(insts)} instance(s)")
 
 
 class SettingsPage(tk.Frame):
     def __init__(self, master, app):
         super().__init__(master, bg=C["bg"])
         self.app = app
-        app.header(self, "Settings", "Look and feel, and where your data lives.")
+        app.header(self, "Settings", "Look and feel, CurseForge, and where your data lives.")
         body = tk.Frame(self, bg=C["bg"])
         body.pack(fill="both", expand=True, padx=32, pady=(6, 20))
-        card = Card(body, height=232)
-        card.pack(fill="x", pady=(0, 16))
+        card = Card(body, height=136)
+        card.pack(fill="x", pady=(0, 14))
         b = card.body
-        field_label(b, "Theme").pack(anchor="w", pady=(2, 8))
-        row = tk.Frame(b, bg=C["card"])
+        b.grid_columnconfigure(0, weight=1, uniform="a")
+        b.grid_columnconfigure(1, weight=1, uniform="a")
+        left = tk.Frame(b, bg=C["card"])
+        left.grid(row=0, column=0, sticky="nw")
+        field_label(left, "Theme").pack(anchor="w", pady=(2, 8))
+        row = tk.Frame(left, bg=C["card"])
         row.pack(anchor="w")
         cur = app.cfg.get("theme", "dark")
         for key, name in (("dark", "Dark"), ("light", "Light")):
             Btn(row, name, lambda k=key: app.set_appearance(theme=k), "primary" if cur == key else "secondary",
                 h=38, w=96, bg=C["card"]).pack(side="left", padx=(0, 8))
-        field_label(b, "Accent colour").pack(anchor="w", pady=(18, 8))
-        ar = tk.Frame(b, bg=C["card"])
+        right = tk.Frame(b, bg=C["card"])
+        right.grid(row=0, column=1, sticky="nw")
+        field_label(right, "Accent colour").pack(anchor="w", pady=(2, 8))
+        ar = tk.Frame(right, bg=C["card"])
         ar.pack(anchor="w")
         cur_a = app.cfg.get("accent", "green")
         for key, (a1, a2) in ACCENTS.items():
@@ -4394,12 +4985,40 @@ class SettingsPage(tk.Frame):
             cv.create_oval(4, 4, 40, 40, fill=a1, outline=C["text"] if key == cur_a else C["card"], width=3)
             cv.create_arc(4, 4, 40, 40, start=210, extent=180, fill=a2, outline="")
             cv.bind("<Button-1>", lambda _e, k=key: app.set_appearance(accent=k))
-        card2 = Card(body, height=150)
+
+        cf = Card(body, height=214)
+        cf.pack(fill="x", pady=(0, 14))
+        c = cf.body
+        field_label(c, "CurseForge API key").pack(anchor="w", pady=(2, 6))
+        self.v_key = tk.StringVar(value=app.cfg.get("curseforge_key", ""))
+        kr = tk.Frame(c, bg=C["card"])
+        kr.pack(fill="x")
+        Btn(kr, "Save", self.save_key, "primary", h=38, bg=C["card"]).pack(side="right", padx=(8, 0))
+        self.key_entry = entry(kr, self.v_key, bg=C["card2"])
+        self.key_entry.entry.configure(show="•")
+        self.key_entry.pack(side="left", fill="x", expand=True)
+        hint(c, "CurseForge only lets apps use its mods and modpacks with a key. Keys are free: sign in at "
+                "console.curseforge.com, create an API key, and paste it here. It's stored only on this computer "
+                "and sent only to CurseForge.", 760).pack(anchor="w", pady=(8, 0))
+        Btn(c, "Get a free key", lambda: webbrowser.open("https://console.curseforge.com/"), "secondary", h=34,
+            bg=C["card"]).pack(anchor="w", pady=(10, 0))
+
+        card2 = Card(body, height=130)
         card2.pack(fill="x")
         b2 = card2.body
         field_label(b2, "Data folder").pack(anchor="w", pady=(2, 6))
         lbl(b2, str(ROOT), 10, color=C["muted"], bg=C["card"]).pack(anchor="w")
         Btn(b2, "Open folder", lambda: open_path(ROOT), "secondary", h=34, bg=C["card"]).pack(anchor="w", pady=(10, 0))
+
+    def save_key(self):
+        key = self.v_key.get().strip()
+        if key:
+            self.app.cfg["curseforge_key"] = key
+        else:
+            self.app.cfg.pop("curseforge_key", None)
+        self.app.save_cfg()
+        set_cf_key(key or os.environ.get("SPECTRA_CURSEFORGE_KEY", ""))
+        self.app.toast("CurseForge key saved" if key else "CurseForge key removed")
 
 
 # --------------------------------------------------------------------------
@@ -4412,6 +5031,8 @@ class App:
     def __init__(self, root):
         self.root = root
         self.cfg = load_json(CONFIG, {})
+        if self.cfg.get("curseforge_key"):
+            set_cf_key(self.cfg["curseforge_key"])
         apply_theme(self.cfg.get("theme", "dark"), self.cfg.get("accent", "green"))
         root.report_callback_exception = self.tk_error
         root.title(WINDOW_TITLE)
@@ -4752,7 +5373,7 @@ class App:
 
     # ---- persistence
     def save_cfg(self):
-        save_json(CONFIG, self.cfg)
+        save_json(CONFIG, self.cfg, private=True)
 
     def save_accounts(self):
         save_json(ACCOUNTS, {"accounts": self.accounts}, private=True)
