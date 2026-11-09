@@ -12,9 +12,9 @@ Website: https://mcpacks-site.github.io/Spectra-launcher/
 - **Instances** - keep separate installs, each with its own Minecraft version, mods, memory and Java settings
 - **Vanilla and mod loaders** - pick Vanilla, Fabric, Quilt, Forge or NeoForge for each instance (Vanilla from 1.7.10; Forge and NeoForge versions are whatever their installers support). Forge and NeoForge are installed with their official installers the first time you play.
 - **Automatic setup** - downloads the game files, the mod loader, Fabric API (on Fabric) and a matching Java runtime (Eclipse Temurin) if you don't have one
-- **Mod manager** - search Modrinth for mods that match your instance's loader, install them with their required dependencies, and enable, disable or remove them
-- **Mods, resource packs, shaders and datapacks** - each instance has tabs to search Modrinth, install and enable, disable or remove every kind of content. Datapacks go into the world you pick.
-- **Modpacks** - browse Modrinth modpacks and install one as a new instance, or import a `.mrpack` file. Packs that need CurseForge are not supported.
+- **Mod manager** - search Modrinth (and CurseForge, with your own free API key) for mods that match your instance's loader, install them with their required dependencies, and enable, disable or remove them
+- **Mods, resource packs, shaders and datapacks** - each instance has tabs to search Modrinth or CurseForge, install and enable, disable or remove every kind of content. Datapacks go into the world you pick.
+- **Modpacks** - browse Modrinth or CurseForge modpacks and install one as a new instance. You can also import a Modrinth `.mrpack`, a CurseForge modpack zip, a Prism Launcher / PolyMC / MultiMC export, or a Spectra export, and copy instances straight from Prism, PolyMC, MultiMC or the CurseForge app if they are installed on this computer. Some CurseForge authors don't allow other launchers to download their files; Spectra lists those and links you to the page to get them yourself.
 - **Instance tools** - duplicate an instance, export it to a zip and import it elsewhere, back up and restore worlds, browse screenshots, and see playtime.
 - **Launch options** - per-instance window size, fullscreen, auto-join a server, and a card colour.
 - **Themes** - dark or light, with five accent colours (Settings page).
@@ -73,6 +73,7 @@ Spectra Launcher runs entirely on your computer. The project runs no servers and
 - Microsoft, Xbox Live and Mojang - to sign you in, verify you own Minecraft, and download the game
 - Fabric, Quilt, Forge and NeoForge - to download the mod loader and its version lists
 - Modrinth - to search for and download mods
+- CurseForge - only if you add an API key in Settings, to search for and download mods and modpacks (the key is stored only on your computer)
 - Adoptium - to download Java if you don't have a suitable version
 - Mojang's skin servers (`api.minecraftservices.com`, `textures.minecraft.net`) - only when you apply or import a skin
 
@@ -82,7 +83,8 @@ Sign-in uses Microsoft's standard device code flow with the scope `XboxLive.sign
 
 - **"CERTIFICATE_VERIFY_FAILED" on macOS** - the launcher normally handles this itself. If it still happens, open the Python folder in Applications and double-click **Install Certificates.command**.
 - **"Minecraft login failed"** - the account you signed in with doesn't own Minecraft: Java Edition.
-- **A mod isn't listed** - it may not have a Fabric build for the Minecraft version of that instance.
+- **A mod isn't listed** - it may not have a build for that instance's loader and Minecraft version.
+- **CurseForge says to add a key** - CurseForge only lets apps use its catalogue with an API key. Create a free one at console.curseforge.com and paste it into Settings.
 
 ## License
 
@@ -90,4 +92,4 @@ MIT. See [LICENSE](LICENSE).
 
 ## Contact
 
-hilderbrandzachary@gmail.com
+support@mcpacks.site
