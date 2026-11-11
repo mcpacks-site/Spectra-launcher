@@ -9,7 +9,7 @@
 <meta name="description" content="Spectra Launcher is a free, open-source launcher for Minecraft: Java Edition with Vanilla, Fabric, Quilt, Forge and NeoForge. Manage instances, mods, modpacks and skins, and sign in with your own Microsoft account.">
 <meta property="og:title" content="Spectra Launcher">
 <meta property="og:description" content="A free, open-source launcher for Minecraft: Java Edition.">
-<meta property="og:image" content="loaders.png">
+<meta property="og:image" content="screenshots/instances.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -137,6 +137,8 @@
   footer .tag { font-size: 1.15rem; color: var(--text); font-weight: 600; letter-spacing: -.01em; }
   footer .fl { display: flex; flex-wrap: wrap; gap: 18px; }
 
+  .dl a.me { border-color: rgba(79,227,154,.55); color: var(--a1); }
+  #dl-meta { margin-top: 14px; color: var(--dim); font-family: var(--mono); font-size: .8rem; min-height: 1.2em; }
   @media (max-width: 860px) { nav.links { display: none; } .gallery { grid-template-columns: 1fr; } .hero { padding-top: 56px; } }
   @media (max-width: 520px) { .nav-cta .btn:not(.primary) { display: none; } ol.steps li { padding-left: 62px; } }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
@@ -159,7 +161,7 @@
     </nav>
     <div class="nav-cta">
       <a class="btn sm" href="https://github.com/mcpacks-site/Spectra-launcher">GitHub</a>
-      <a class="btn sm primary" href="https://github.com/mcpacks-site/Spectra-launcher/releases/latest">Download</a>
+      <a class="btn sm primary" id="dl-nav" href="https://github.com/mcpacks-site/Spectra-launcher/releases/latest">Download</a>
     </div>
   </div>
 </header>
@@ -171,15 +173,16 @@
       <h1>The Minecraft launcher, <span class="grad">made simple.</span></h1>
       <p class="lead">Create separate game instances, install mods and their dependencies with a click, and play Minecraft: Java Edition with Vanilla, Fabric, Quilt, Forge or NeoForge. Sign in with your own Microsoft account.</p>
       <div class="btns">
-        <a class="btn primary lg" href="https://github.com/mcpacks-site/Spectra-launcher/releases/latest">Download the launcher</a>
+        <a class="btn primary lg" id="dl-main" href="https://github.com/mcpacks-site/Spectra-launcher/releases/latest">Download the launcher</a>
         <a class="btn lg" href="https://github.com/mcpacks-site/Spectra-launcher">View on GitHub</a>
       </div>
-      <div class="dl">
-        <a href="https://github.com/mcpacks-site/Spectra-launcher/releases/latest">Windows <small>.zip</small></a>
-        <a href="https://github.com/mcpacks-site/Spectra-launcher/releases/latest">macOS <small>.dmg</small></a>
-        <a href="https://github.com/mcpacks-site/Spectra-launcher/releases/latest">Linux <small>.zip</small></a>
+      <div class="dl" id="dl-chips">
+        <a href="https://github.com/mcpacks-site/Spectra-launcher/releases/latest" data-os="windows">Windows <small>.zip</small></a>
+        <a href="https://github.com/mcpacks-site/Spectra-launcher/releases/latest" data-os="mac">macOS <small>.dmg</small></a>
+        <a href="https://github.com/mcpacks-site/Spectra-launcher/releases/latest" data-os="linux">Linux <small>.zip</small></a>
       </div>
-      <div class="shot-hero"><div class="frame"><img src="loaders.png" alt="Spectra Launcher instance list" width="1180" height="740"></div></div>
+      <div id="dl-meta"></div>
+      <div class="shot-hero"><div class="frame"><img src="screenshots/instances.png" alt="Spectra Launcher instance list" width="1180" height="740"></div></div>
       <div class="note">The apps are not code-signed yet, so Windows SmartScreen or macOS Gatekeeper may warn about an unrecognised publisher. On Windows click <b>More info</b>, then <b>Run anyway</b>. On macOS right-click the app and choose <b>Open</b> the first time.</div>
     </div>
 
@@ -216,7 +219,7 @@
       <h2>A look around.</h2>
       <p class="sub">Screenshots of the launcher itself.</p>
       <div class="gallery">
-        <figure><div class="frame"><img src="loaders.png" alt="Creating an instance with a mod loader" loading="lazy"></div><figcaption><b>New instance.</b> Pick Vanilla or a loader, then a version.</figcaption></figure>
+        <figure><div class="frame"><img src="screenshots/loaders.png" alt="Creating an instance with a mod loader" loading="lazy"></div><figcaption><b>New instance.</b> Pick Vanilla or a loader, then a version.</figcaption></figure>
         <figure><div class="frame"><img src="screenshots/skin-maker.png" alt="The skin maker" loading="lazy"></div><figcaption><b>Skin maker.</b> Paint on the texture or straight on the 3D model.</figcaption></figure>
         <figure><div class="frame"><img src="screenshots/capes.png" alt="Capes page" loading="lazy"></div><figcaption><b>Skins and capes.</b> Preview and equip what you own.</figcaption></figure>
         <figure><div class="frame"><img src="screenshots/worlds.png" alt="Worlds and backups" loading="lazy"></div><figcaption><b>Worlds and backups.</b> Safe copies of your worlds, one click to restore.</figcaption></figure>
@@ -276,7 +279,7 @@
       <p>Sign-in uses Microsoft's standard device code flow with the scope <code>XboxLive.signin offline_access</code>. We never see your Microsoft password.</p>
 
       <h3>Contact</h3>
-      <p><a href="mailto:support@mcpacks.site">support@mcpacks.site</a></p>
+      <p><a href="mailto:hilderbrandzachary@gmail.com">hilderbrandzachary@gmail.com</a></p>
     
       </div>
     </section>
@@ -286,8 +289,64 @@
   <div class="wrap">
     <p class="tag">Play Minecraft your way.</p>
     <p>Spectra Launcher is free and open source. It is not an official Minecraft product and is not approved by or associated with Mojang or Microsoft. It is not affiliated with the Fabric, Quilt, Forge or NeoForge projects.</p>
-    <div class="fl"><a href="https://github.com/mcpacks-site/Spectra-launcher">Source code</a><a href="#privacy">Privacy policy</a><a href="mailto:support@mcpacks.site">Contact</a></div>
+    <div class="fl"><a href="https://github.com/mcpacks-site/Spectra-launcher">Source code</a><a href="#privacy">Privacy policy</a><a href="mailto:hilderbrandzachary@gmail.com">Contact</a></div>
   </div>
 </footer>
+<script>
+(function () {
+  var REPO = "mcpacks-site/Spectra-launcher";
+  var BASE = "https://github.com/" + REPO + "/releases/latest/download/";
+  var NAMES = { windows: "SpectraLauncher-Windows.zip", mac: "SpectraLauncher.dmg", linux: "SpectraLauncher-Linux.zip" };
+  var LABEL = { windows: "Windows", mac: "macOS", linux: "Linux" };
+  var PICK = { windows: /windows.*\.zip$/i, mac: /\.dmg$/i, linux: /linux.*\.zip$/i };
+  function detect() {
+    var ua = navigator.userAgent || "";
+    var plat = ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "").toLowerCase();
+    if (/android|iphone|ipad|ipod|cros/i.test(ua)) return null;          // phones, tablets, Chromebooks
+    if (/mac/.test(plat) || /macintosh|mac os x/i.test(ua)) return (navigator.maxTouchPoints > 1) ? null : "mac";
+    if (/win/.test(plat) || /windows/i.test(ua)) return "windows";
+    if (/linux|x11|bsd/.test(plat + " " + ua.toLowerCase())) return "linux";
+    return null;
+  }
+  var os = detect();
+  var links = {};                                   // os -> url, direct names first, refined by the API below
+  Object.keys(NAMES).forEach(function (k) { links[k] = BASE + NAMES[k]; });
+  var main = document.getElementById("dl-main"), nav = document.getElementById("dl-nav");
+  var meta = document.getElementById("dl-meta");
+  var chips = [].slice.call(document.querySelectorAll("#dl-chips a"));
+  function apply() {
+    chips.forEach(function (a) {
+      var k = a.getAttribute("data-os");
+      a.href = links[k];
+      if (k === os) a.classList.add("me");
+    });
+    if (os) {
+      main.href = nav.href = links[os];
+      main.textContent = "Download for " + LABEL[os];
+      nav.textContent = "Download";
+    } else {
+      main.textContent = "Download the launcher";
+      if (meta && /android|iphone|ipad/i.test(navigator.userAgent)) meta.textContent = "Spectra is a desktop app. Open this page on Windows, macOS or Linux.";
+    }
+  }
+  apply();
+  function size(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.round(n / 1024) + " KB"; }
+  if (window.fetch) {
+    fetch("https://api.github.com/repos/" + REPO + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+      .then(function (rel) {
+        var assets = rel.assets || [];
+        Object.keys(PICK).forEach(function (k) {
+          var a = assets.filter(function (x) { return PICK[k].test(x.name); })[0];
+          if (a) links[k] = a.browser_download_url, links[k + "_size"] = a.size;
+        });
+        apply();
+        if (meta && os && links[os + "_size"]) meta.textContent = (rel.tag_name || rel.name || "") + "  ·  " + size(links[os + "_size"]);
+        else if (meta && os && rel.tag_name) meta.textContent = rel.tag_name;
+      })
+      .catch(function () {});
+  }
+})();
+</script>
 </body>
 </html>
