@@ -2247,7 +2247,7 @@ def tree_box(master, columns, heads, widths, stretch_col, height=8):
 # --------------------------------------------------------------------------
 class AddInstanceDialog(Dialog):
     def __init__(self, app):
-        super().__init__(app, "New instance", 560, 700)
+        super().__init__(app, "New instance", 560, 780)
         self.loader = "fabric"
         b = tk.Frame(self, bg=C["panel"])
         b.pack(fill="both", expand=True, padx=32, pady=28)
@@ -2282,6 +2282,10 @@ class AddInstanceDialog(Dialog):
         self.api_row = switch_row(self.sw, "Install Fabric API", self.api,
                                   "Most Fabric mods need it. Kept up to date automatically.")
         self.api_row.pack(fill="x", pady=6)
+        self.boost = tk.BooleanVar(value=True)
+        self.boost_row = switch_row(self.sw, "Spectra Boost", self.boost,
+                                    "Adds Sodium, Lithium and other performance mods, plus tuned Java flags.")
+        self.boost_row.pack(fill="x", pady=6)
         btns = tk.Frame(b, bg=C["panel"])
         btns.pack(side="bottom", fill="x")
         Btn(btns, "Create instance", self.create, "primary", h=44, size=10).pack(side="right")
@@ -2300,6 +2304,10 @@ class AddInstanceDialog(Dialog):
             self.api_row.pack(fill="x", pady=6)
         else:
             self.api_row.pack_forget()
+        if key == "vanilla":
+            self.boost_row.pack_forget()
+        else:
+            self.boost_row.pack(fill="x", pady=6)
         if key in ("forge", "neoforge"):
             self.snap_row.pack_forget()
         else:
@@ -2345,10 +2353,19 @@ class AddInstanceDialog(Dialog):
         inst = {"id": new_instance_id(name), "name": name, "version": self.ver.get(), "loader": self.loader,
                 "ram_gb": 4, "java": "", "jvm_args": "",
                 "auto_fabric_api": self.api.get() and self.loader == "fabric", "mods": {}}
+        boost = self.boost.get() and self.loader in PERF_MODS
+        if boost:
+            inst["perf_flags"] = True
         save_instance(inst)
         game_dir_of(inst).mkdir(parents=True, exist_ok=True)
         self.app.refresh_instances(select=inst["id"])
-        self.app.toast(f"Created {name}")
+        if boost:
+            self.app.toast(f"Created {name}. Adding performance mods…")
+            self.app.bg(lambda: install_perf_mods(inst, self.app.log),
+                        lambda _r: self.app.toast(f"{name} is ready with Spectra Boost"),
+                        lambda e: self.app.log(f"WARNING: Spectra Boost failed: {e}"))
+        else:
+            self.app.toast(f"Created {name}")
         self.destroy()
 
 
