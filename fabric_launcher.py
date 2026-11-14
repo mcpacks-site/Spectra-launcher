@@ -973,7 +973,7 @@ def _launcher_roots():
     if OS == "windows":
         prism = [("Prism Launcher", appdata / "PrismLauncher"), ("PolyMC", appdata / "PolyMC")]
         cf = [h / "curseforge" / "minecraft" / "Instances"]
-    elif OS == "macos":
+    elif OS == "osx":
         s = h / "Library" / "Application Support"
         prism = [("Prism Launcher", s / "PrismLauncher"), ("PolyMC", s / "PolyMC"), ("MultiMC", s / "MultiMC")]
         cf = [h / "Documents" / "curseforge" / "minecraft" / "Instances", h / "curseforge" / "minecraft" / "Instances"]
@@ -1473,27 +1473,15 @@ from tkinter import filedialog, simpledialog
 C = {
     "bg": "#0b100d", "side": "#080c09", "panel": "#101611", "card": "#151d17", "card2": "#1b261f",
     "line": "#243029", "line2": "#31423a", "text": "#ecf3ee", "muted": "#8f9f94", "dim": "#5f6f65",
-    "accent": "#46e08a", "accent2": "#2cc7b5", "ink": "#04130a", "danger": "#ff6b7a", "warn": "#ffc15a",
+    "accent": "#4fe39a", "accent2": "#2fc9d4", "ink": "#04130a", "danger": "#ff6b7a", "warn": "#ffc15a",
 }
 ACCENTS = {   # name -> (accent, accent2)
-    "green": ("#46e08a", "#2cc7b5"), "blue": ("#4aa3ff", "#4a6cff"), "purple": ("#b07bff", "#7a5cff"),
+    "green": ("#4fe39a", "#2fc9d4"), "blue": ("#4aa3ff", "#4a6cff"), "purple": ("#b07bff", "#7a5cff"),
     "pink": ("#ff6fa8", "#ff5d73"), "orange": ("#ffa94d", "#ff7a3d"),
 }
 THEMES = {
-    "dark": {"bg": "#0b100d", "side": "#080c09", "panel": "#101611", "card": "#151d17", "card2": "#1b261f",
-             "line": "#243029", "line2": "#31423a", "text": "#ecf3ee", "muted": "#8f9f94", "dim": "#5f6f65",
-             "ink": "#04130a", "danger": "#ff6b7a", "warn": "#ffc15a", "btn": "#1c2820", "btn_bd": "#2f4037",
-             "dng": "#2a1519", "dng_bd": "#51262d", "off": "#24332b", "track": "#1d2a22", "track_bd": "#2b3b32",
-             "sb": "#25322a", "sb_hover": "#35473c", "sunk": "#0e1510", "sunk2": "#121b14", "sunk_hov": "#122019",
-             "shadow": "#070a08", "log_bg": "#090d0a", "log_fg": "#b4c4ba", "warn_bg": "#241d10", "warn_bd": "#4a3a18",
-             "sw_off": "#26332b", "sw_off_bd": "#34463b", "knob_off": "#8f9f94", "knob_on": "#ffffff", "tint": 1.0},
-    "light": {"bg": "#f3f6f4", "side": "#e8eeea", "panel": "#ffffff", "card": "#ffffff", "card2": "#eef3f0",
-              "line": "#d8e1db", "line2": "#c2cfc7", "text": "#14201a", "muted": "#52665a", "dim": "#7b8e83",
-              "ink": "#ffffff", "danger": "#d63a4e", "warn": "#a86a00", "btn": "#e4ebe7", "btn_bd": "#c2cfc7",
-              "dng": "#fde8eb", "dng_bd": "#f1b4bd", "off": "#dce4df", "track": "#d6dfd9", "track_bd": "#c2cfc7",
-              "sb": "#c3d0c8", "sb_hover": "#a8bcaf", "sunk": "#e6ede8", "sunk2": "#dae4dd", "sunk_hov": "#dce7e0",
-              "shadow": "#d0dad4", "log_bg": "#f8fbf9", "log_fg": "#2c4036", "warn_bg": "#fbefd5", "warn_bd": "#e6cc8c",
-              "sw_off": "#cfd9d3", "sw_off_bd": "#b9c8bf", "knob_off": "#ffffff", "knob_on": "#ffffff", "tint": 0.0},
+    "dark": {'bg': '#100a1f', 'side': '#0c0718', 'panel': '#150e29', 'card': '#1b1529', 'card2': '#231e31', 'line': '#262033', 'line2': '#363143', 'text': '#f3f0fb', 'muted': '#a59fba', 'dim': '#756e8d', 'ink': '#07140e', 'danger': '#ff6b7a', 'warn': '#ffc15a', 'btn': '#211b2f', 'btn_bd': '#363143', 'dng': '#2a1224', 'dng_bd': '#552443', 'off': '#2d273a', 'track': '#282235', 'track_bd': '#363143', 'sb': '#312c3e', 'sb_hover': '#4e4a59', 'sunk': '#0b0716', 'sunk2': '#110b21', 'sunk_hov': '#150e29', 'shadow': '#07040f', 'log_bg': '#0b0716', 'log_fg': '#cbc5de', 'warn_bg': '#2a2110', 'warn_bd': '#5a4818', 'sw_off': '#2f2a3c', 'sw_off_bd': '#454050', 'knob_off': '#a59fba', 'knob_on': '#ffffff', 'tint': 1.0},
+    "light": {'bg': '#f6f4fb', 'side': '#ffffff', 'panel': '#ffffff', 'card': '#ffffff', 'card2': '#f0edf8', 'line': '#e4def1', 'line2': '#cfc7e3', 'text': '#1a1330', 'muted': '#5d5675', 'dim': '#8b84a3', 'ink': '#ffffff', 'danger': '#d63a4e', 'warn': '#a86a00', 'btn': '#ebe7f5', 'btn_bd': '#cfc7e3', 'dng': '#fde8ef', 'dng_bd': '#f1b4c6', 'off': '#e0dbee', 'track': '#dcd6ec', 'track_bd': '#cfc7e3', 'sb': '#cdc5e0', 'sb_hover': '#b3a9cf', 'sunk': '#ece8f6', 'sunk2': '#e2ddf0', 'sunk_hov': '#e5e0f2', 'shadow': '#dcd5ec', 'log_bg': '#faf8fe', 'log_fg': '#2e2547', 'warn_bg': '#fbefd5', 'warn_bd': '#e6cc8c', 'sw_off': '#d8d2e9', 'sw_off_bd': '#c1b8da', 'knob_off': '#ffffff', 'knob_on': '#ffffff', 'tint': 0.0},
 }
 
 
@@ -1554,9 +1542,9 @@ def _pick(cands, fallback):
 
 def font(size=10, weight="normal", mono=False):
     if "ui" not in _FONTS:
-        _FONTS["ui"] = _pick(("Inter", "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue",
+        _FONTS["ui"] = _pick(("Geist", "Inter", "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue",
                               "Ubuntu", "Cantarell", "Noto Sans", "DejaVu Sans"), "TkDefaultFont")
-        _FONTS["mono"] = _pick(("SF Mono", "Menlo", "Cascadia Mono", "Consolas", "JetBrains Mono",
+        _FONTS["mono"] = _pick(("Geist Mono", "SF Mono", "Menlo", "Cascadia Mono", "Consolas", "JetBrains Mono",
                                 "DejaVu Sans Mono", "Liberation Mono"), "Courier")
     k = 1.3 if OS == "osx" else 1.0
     return (_FONTS["mono" if mono else "ui"], int(round(size * k)), weight)
@@ -1983,14 +1971,18 @@ class Card(tk.Canvas):
 
 
 class NavItem(tk.Canvas):
+    """A pill in the top navigation bar."""
+
     def __init__(self, master, text, icon, command):
-        super().__init__(master, height=44, bg=C["side"], highlightthickness=0, bd=0, cursor="hand2")
         self.text, self.icon, self.command = text, icon, command
+        self.fnt = font(10, "bold")
+        self.bw = text_width(text, self.fnt) + 24
+        super().__init__(master, width=self.bw, height=36, bg=C["side"], highlightthickness=0, bd=0, cursor="hand2")
         self.active = self.hover = False
-        self.bind("<Configure>", lambda _e: self.draw())
         self.bind("<Enter>", lambda _e: self._set(hover=True))
         self.bind("<Leave>", lambda _e: self._set(hover=False))
         self.bind("<Button-1>", lambda _e: self.command())
+        self.draw()
 
     def _set(self, **kw):
         for k, v in kw.items():
@@ -1999,18 +1991,66 @@ class NavItem(tk.Canvas):
 
     def draw(self):
         self.delete("all")
-        w = self.winfo_width()
-        if w < 20:
-            return
+        w = self.bw
         if self.active:
-            rrect(self, 2, 2, w - 2, 42, 10, fill=C["nav_on"], outline=C["nav_on_bd"])
-            rrect(self, 2, 12, 6, 32, 2, fill=C["accent"], outline=C["accent"])
+            rrect(self, 1, 1, w - 1, 35, 11, fill=C["nav_on"], outline=C["nav_on_bd"])
         elif self.hover:
-            rrect(self, 2, 2, w - 2, 42, 10, fill=C["nav_hover"], outline=C["nav_hover"])
+            rrect(self, 1, 1, w - 1, 35, 11, fill=C["nav_hover"], outline=C["nav_hover"])
         col = C["accent"] if self.active else (C["text"] if self.hover else C["muted"])
-        draw_icon(self, self.icon, 28, 22, 18, col)
-        self.create_text(50, 22, text=self.text, anchor="w", fill=C["text"] if self.active else col,
-                         font=font(10, "bold" if self.active else "normal"))
+        self.create_text(w / 2, 18, text=self.text, fill=col, font=self.fnt)
+
+
+class SmoothScroll:
+    """Eased, pixel-accurate mouse-wheel scrolling for a Canvas (Tk's own 'units' jump by a fifth of the window)."""
+    NOTCH = 70
+
+    def __init__(self, cv):
+        self.cv, self.target, self._job = cv, None, None
+        cv.configure(yscrollincrement=1)
+
+    def attach(self):
+        self.cv.bind("<Enter>", lambda _e: self.enable(True), add="+")
+        self.cv.bind("<Leave>", lambda _e: self.enable(False), add="+")
+
+    def enable(self, on):
+        cv = self.cv
+        if on:
+            cv.bind_all("<MouseWheel>", self.wheel)
+            cv.bind_all("<Button-4>", lambda _e: self.by(-self.NOTCH))
+            cv.bind_all("<Button-5>", lambda _e: self.by(self.NOTCH))
+        else:
+            for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                cv.unbind_all(seq)
+
+    def wheel(self, e):
+        self.by(-e.delta * 4 if OS == "osx" else -e.delta / 120.0 * self.NOTCH)
+
+    def limit(self):
+        try:
+            y2 = float(str(self.cv.cget("scrollregion")).split()[3])
+        except (ValueError, IndexError):
+            return 0.0
+        return max(0.0, y2 - self.cv.winfo_height())
+
+    def by(self, px):
+        base = self.target if self.target is not None else self.cv.canvasy(0)
+        self.target = min(max(base + px, 0.0), self.limit())
+        if self._job is None:
+            self._tick()
+
+    def _tick(self):
+        self._job = None
+        if self.target is None:
+            return
+        diff = self.target - self.cv.canvasy(0)
+        if abs(diff) < 1.0:
+            self.target = None
+            return
+        move = diff * 0.3
+        if abs(move) < 1:
+            move = 1 if diff > 0 else -1
+        self.cv.yview_scroll(int(round(move)), "units")
+        self._job = self.cv.after(12, self._tick)
 
 
 class Dialog(tk.Toplevel):
@@ -2409,6 +2449,7 @@ class InstanceGrid(tk.Frame):
         self.sb = ttk.Scrollbar(self.cv, orient="vertical", command=self.cv.yview)
         self.cv.configure(yscrollcommand=self._sb_set)
         self.cv.pack(fill="both", expand=True)
+        self.smooth = SmoothScroll(self.cv)
         self.hit, self.hover, self._job = [], None, None
         self.cw, self._imgs, self._cache = self.CW, [], {}
         self.cv.bind("<Configure>", lambda _e: self.schedule())
@@ -2435,19 +2476,7 @@ class InstanceGrid(tk.Frame):
         return self._cache[key]
 
     def _wheel(self, on):
-        if on:
-            self.cv.bind_all("<MouseWheel>", self._on_wheel)
-            self.cv.bind_all("<Button-4>", lambda _e: self.cv.yview_scroll(-2, "units"))
-            self.cv.bind_all("<Button-5>", lambda _e: self.cv.yview_scroll(2, "units"))
-        else:
-            for s in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-                self.cv.unbind_all(s)
-
-    def _on_wheel(self, e):
-        d = -1 if e.delta > 0 else 1
-        if OS == "windows":
-            d = int(-e.delta / 120) or d
-        self.cv.yview_scroll(d * 2, "units")
+        self.smooth.enable(on)
 
     # ---- drawing
     def schedule(self):
@@ -4051,7 +4080,7 @@ class SkinsPage(tk.Frame):
         card.config(width=330)
         card.grid_propagate(False)
         b = card.body
-        self.view = SkinView(b, width=290, height=330, bg=C["card"])
+        self.view = SkinView(b, width=290, height=272, bg=C["card"])
         self.view.pack()
         self.view.auto = True
         self.name_lbl = lbl(b, "No skin selected", 13, "bold", bg=C["card"])
@@ -4683,8 +4712,7 @@ class ScreenshotsTab(tk.Frame):
         sb.pack(side="right", fill="y")
         self.cv.pack(side="left", fill="both", expand=True)
         self.cv.bind("<Configure>", lambda _e: self.layout())
-        for seq, d in (("<MouseWheel>", None), ("<Button-4>", -1), ("<Button-5>", 1)):
-            self.cv.bind(seq, lambda e, d=d: self.cv.yview_scroll((-1 if e.delta > 0 else 1) if d is None else d, "units"))
+        SmoothScroll(self.cv).attach()
         self.imgs, self.files = [], []
         self.load()
 
@@ -4952,13 +4980,40 @@ class ModpacksPage(tk.Frame):
         self.app.toast(f"Imported {len(insts)} instance(s)")
 
 
+class ScrollFrame(tk.Frame):
+    """A vertically scrolling container; put children in `.body`."""
+
+    def __init__(self, master, bg=None):
+        bg = bg or C["bg"]
+        super().__init__(master, bg=bg)
+        self.cv = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self.sb = ttk.Scrollbar(self, orient="vertical", command=self.cv.yview)
+        self.cv.configure(yscrollcommand=self._sb_set)
+        self.cv.pack(side="left", fill="both", expand=True)
+        self.body = tk.Frame(self.cv, bg=bg)
+        self.win = self.cv.create_window(0, 0, anchor="nw", window=self.body)
+        self.body.bind("<Configure>", lambda _e: self.cv.configure(scrollregion=(0, 0, self.body.winfo_reqwidth(),
+                                                                                  self.body.winfo_reqheight())))
+        self.cv.bind("<Configure>", lambda e: self.cv.itemconfigure(self.win, width=e.width))
+        SmoothScroll(self.cv).attach()
+
+    def _sb_set(self, lo, hi):
+        self.sb.set(lo, hi)
+        if float(lo) <= 0.0 and float(hi) >= 1.0:
+            self.sb.pack_forget()
+        elif not self.sb.winfo_ismapped():
+            self.sb.pack(side="right", fill="y")
+
+
 class SettingsPage(tk.Frame):
     def __init__(self, master, app):
         super().__init__(master, bg=C["bg"])
         self.app = app
         app.header(self, "Settings", "Look and feel, CurseForge, and where your data lives.")
-        body = tk.Frame(self, bg=C["bg"])
-        body.pack(fill="both", expand=True, padx=32, pady=(6, 20))
+        sf = ScrollFrame(self)
+        sf.pack(fill="both", expand=True, padx=(32, 20))
+        body = tk.Frame(sf.body, bg=C["bg"])
+        body.pack(fill="x", padx=(0, 12), pady=(6, 20))
         card = Card(body, height=136)
         card.pack(fill="x", pady=(0, 14))
         b = card.body
@@ -5027,6 +5082,10 @@ class SettingsPage(tk.Frame):
 WINDOW_TITLE = APP_NAME
 
 
+KICKERS = {"Instances": "LIBRARY", "Accounts": "ACCOUNT", "Modpacks": "DISCOVER", "Skins": "WARDROBE",
+           "Cursor": "APPEARANCE", "Console": "LOGS", "Settings": "PREFERENCES", "About": "ABOUT"}
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -5041,7 +5100,7 @@ class App:
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
         w, h = min(w, sw - 80), min(h, sh - 120)
         root.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 3)}")
-        root.minsize(960, 620)
+        root.minsize(1040, 660)
         setup_style(root)
         self.q = queue.Queue()
         # Only Microsoft accounts are supported; ignore anything else left in an old file.
@@ -5067,10 +5126,11 @@ class App:
     # ---- layout
     def header(self, parent, title, sub):
         f = tk.Frame(parent, bg=C["bg"])
-        f.pack(fill="x", padx=32, pady=(30, 10))
+        f.pack(fill="x", padx=32, pady=(20, 8))
         left = tk.Frame(f, bg=C["bg"])
         left.pack(side="left")
-        lbl(left, title, 24, "bold", bg=C["bg"]).pack(anchor="w")
+        lbl(left, KICKERS.get(title, "SPECTRA"), 8, "bold", C["accent"], mono=True, bg=C["bg"]).pack(anchor="w")
+        lbl(left, title, 26, "bold", bg=C["bg"]).pack(anchor="w", pady=(2, 0))
         s = lbl(left, sub, 10, color=C["muted"], bg=C["bg"])
         s.pack(anchor="w", pady=(2, 0))
         right = tk.Frame(f, bg=C["bg"])
@@ -5079,42 +5139,40 @@ class App:
 
     def build(self):
         root = self.root
-        root.grid_columnconfigure(1, weight=1)
-        root.grid_rowconfigure(0, weight=1)
-        side = tk.Frame(root, bg=C["side"], width=244)
-        side.grid(row=0, column=0, sticky="ns")
-        side.pack_propagate(False)
-        tk.Frame(root, bg=C["line"], width=1).grid(row=0, column=0, sticky="nse")
+        root.grid_columnconfigure(0, weight=1)
+        root.grid_rowconfigure(1, weight=1)
+        top = tk.Frame(root, bg=C["side"], height=60)
+        top.grid(row=0, column=0, sticky="ew")
+        top.grid_propagate(False)
+        top.grid_columnconfigure(1, weight=1)
+        top.grid_rowconfigure(0, weight=1)
+        tk.Frame(root, bg=C["line"], height=1).grid(row=0, column=0, sticky="sew")
         main = tk.Frame(root, bg=C["bg"])
-        main.grid(row=0, column=1, sticky="nsew")
+        main.grid(row=1, column=0, sticky="nsew")
         main.grid_columnconfigure(0, weight=1)
         main.grid_rowconfigure(0, weight=1)
 
         # brand
-        brand = tk.Canvas(side, width=244, height=92, bg=C["side"], highlightthickness=0, bd=0)
-        brand.pack(fill="x")
-        draw_logo(brand, 24, 26, 40)
-        brand.create_text(78, 40, text="Spectra", anchor="w", fill=C["text"], font=font(16, "bold"))
-        brand.create_text(79, 60, text="L A U N C H E R", anchor="w", fill=C["dim"], font=font(7, "bold"))
+        brand = tk.Canvas(top, width=150, height=60, bg=C["side"], highlightthickness=0, bd=0, cursor="hand2")
+        brand.grid(row=0, column=0, sticky="w", padx=(20, 0))
+        draw_logo(brand, 0, 13, 34)
+        brand.create_text(44, 30, text="Spectra", anchor="w", fill=C["text"], font=font(15, "bold"))
+        brand.bind("<Button-1>", lambda _e: self.show_page("instances"))
 
         # navigation
-        nav = tk.Frame(side, bg=C["side"])
-        nav.pack(fill="x", padx=12, pady=(6, 0))
+        nav = tk.Frame(top, bg=C["side"])
+        nav.grid(row=0, column=1)
         self.nav = {}
         for key, text, icon in (("instances", "Instances", "grid"), ("accounts", "Accounts", "user"),
                                 ("modpacks", "Modpacks", "pack"), ("skins", "Skins", "skin"), ("cursor", "Cursor", "cursor"),
                                 ("console", "Console", "term"), ("settings", "Settings", "gear"), ("about", "About", "info")):
             n = NavItem(nav, text, icon, lambda k=key: self.show_page(k))
-            n.pack(fill="x", pady=2)
+            n.pack(side="left", padx=1)
             self.nav[key] = n
 
-        # account chip + disclaimer
-        foot = tk.Frame(side, bg=C["side"])
-        foot.pack(side="bottom", fill="x", padx=12, pady=(0, 14))
-        lbl(foot, "Not an official Minecraft product.\nNot affiliated with Mojang or Microsoft.", 7,
-            color=C["dim"], bg=C["side"], justify="left").pack(anchor="w", padx=4, pady=(10, 0), side="bottom")
-        self.chip = tk.Canvas(foot, width=220, height=62, bg=C["side"], highlightthickness=0, bd=0, cursor="hand2")
-        self.chip.pack(side="bottom")
+        # account chip
+        self.chip = tk.Canvas(top, width=164, height=44, bg=C["side"], highlightthickness=0, bd=0, cursor="hand2")
+        self.chip.grid(row=0, column=2, sticky="e", padx=(0, 20))
         self.chip.bind("<Button-1>", lambda _e: self.show_page("accounts"))
         self.chip.bind("<Enter>", lambda _e: self.draw_chip(True))
         self.chip.bind("<Leave>", lambda _e: self.draw_chip(False))
@@ -5137,7 +5195,7 @@ class App:
             p.grid(row=0, column=0, sticky="nsew")
 
         # launch bar
-        bar = tk.Frame(main, bg=C["side"], height=98)
+        bar = tk.Frame(main, bg=C["side"], height=88)
         bar.grid(row=1, column=0, sticky="ew")
         bar.pack_propagate(False)
         tk.Frame(bar, bg=C["line"], height=1).pack(fill="x", side="top")
@@ -5161,7 +5219,9 @@ class App:
         self.status.pack(fill="x", pady=(0, 7))
         self.meter = Meter(mid, height=10, bg=C["side"])
         self.meter.pack(fill="x")
-        self.btn_launch = Btn(inner, "PLAY", self.launch, "primary", w=190, h=58, size=12, r=16, bg=C["side"], icon="play")
+        lbl(mid, "Not an official Minecraft product. Not affiliated with Mojang or Microsoft.", 7, color=C["dim"],
+            bg=C["side"], anchor="w").pack(fill="x", pady=(6, 0))
+        self.btn_launch = Btn(inner, "PLAY", self.launch, "primary", w=190, h=54, size=12, r=16, bg=C["side"], icon="play")
         self.btn_launch.grid(row=0, column=2, sticky="e")
         self.show_page("instances")
 
@@ -5342,18 +5402,17 @@ class App:
     def draw_chip(self, hover=False):
         cv, a = self.chip, self.current_account()
         cv.delete("all")
-        rrect(cv, 1, 1, 219, 61, 14, fill=C["sunk_hov"] if hover else C["sunk"], outline=C["line2"] if hover else C["line"])
+        rrect(cv, 1, 1, 163, 43, 21, fill=C["card2"] if hover else C["card"], outline=C["line2"] if hover else C["line"])
         if a:
-            draw_avatar(cv, 12, 12, 38, acct_key(a))
-            cv.create_text(62, 24, text=fit_text(a["username"], font(10, "bold"), 140), anchor="w",
-                           fill=C["text"], font=font(10, "bold"))
-            cv.create_text(62, 42, text="Microsoft account",
-                           anchor="w", fill=C["muted"], font=font(8))
+            draw_avatar(cv, 7, 7, 30, acct_key(a))
+            cv.create_text(46, 16, text=fit_text(a["username"], font(9, "bold"), 108), anchor="w",
+                           fill=C["text"], font=font(9, "bold"))
+            cv.create_text(46, 30, text="Microsoft account", anchor="w", fill=C["muted"], font=font(7))
         else:
-            cv.create_oval(12, 12, 50, 50, fill=C["card2"], outline=C["line2"])
-            draw_icon(cv, "user", 31, 31, 18, C["muted"])
-            cv.create_text(62, 24, text="Not signed in", anchor="w", fill=C["text"], font=font(10, "bold"))
-            cv.create_text(62, 42, text="Click to add an account", anchor="w", fill=C["accent"], font=font(8))
+            cv.create_oval(7, 7, 37, 37, fill=C["card2"], outline=C["line2"])
+            draw_icon(cv, "user", 22, 22, 14, C["muted"])
+            cv.create_text(46, 16, text="Not signed in", anchor="w", fill=C["text"], font=font(9, "bold"))
+            cv.create_text(46, 30, text="Click to sign in", anchor="w", fill=C["accent"], font=font(7))
 
     def update_bar(self):
         inst = self.instance_by_id(self.sel_id)
