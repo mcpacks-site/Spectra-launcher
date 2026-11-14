@@ -19,7 +19,9 @@ MICROSOFT SIGN-IN
   Minecraft login step works: https://aka.ms/AppRegInfo
   The Azure app must allow personal Microsoft accounts and "Allow public client flows" = Yes.
 """
+import base64
 import hashlib
+import html
 import json
 import os
 import platform
@@ -667,6 +669,36 @@ def install_modrinth_pack(project, log, progress=None):
 
 
 # --------------------------------------------------------------------------
+# Performance: curated performance mods and a tuned set of Java flags
+# --------------------------------------------------------------------------
+PERF_MODS = {   # Modrinth project slugs, per loader
+    "fabric": ["sodium", "lithium", "ferrite-core", "modernfix", "immediatelyfast", "entityculling", "dynamic-fps"],
+    "quilt": ["sodium", "lithium", "ferrite-core", "modernfix", "immediatelyfast", "entityculling", "dynamic-fps"],
+    "neoforge": ["sodium", "lithium", "ferrite-core", "modernfix", "immediatelyfast", "entityculling"],
+    "forge": ["embeddium", "ferrite-core", "modernfix", "entityculling"],
+}
+PERF_JVM = ("-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=50 -XX:+UnlockExperimentalVMOptions "
+            "-XX:+DisableExplicitGC -XX:G1NewSizePercent=20 -XX:G1ReservePercent=20 -XX:G1HeapRegionSize=16M "
+            "-XX:+PerfDisableSharedMem")
+
+
+def install_perf_mods(inst, log):
+    """Install the curated performance mods for this instance's loader (plus their required dependencies)."""
+    loader = loader_of(inst)
+    slugs = PERF_MODS.get(loader)
+    if not slugs:
+        raise IOError("Vanilla instances can't use performance mods. Create a Fabric, Quilt, Forge or NeoForge instance.")
+    mods = inst.setdefault("mods", {})
+    seen = set()
+    for slug in slugs:
+        try:
+            install_project(inst["version"], slug, game_dir_of(inst) / "mods", mods, log, seen, loader)
+        except Exception as e:  # noqa: BLE001
+            log(f"WARNING: could not install {slug}: {e}")
+    save_instance(inst)
+
+
+# --------------------------------------------------------------------------
 # CurseForge (needs the user's own API key) and imports from other launchers
 # --------------------------------------------------------------------------
 CURSEFORGE = "https://api.curseforge.com/v1"
@@ -711,7 +743,10 @@ def cf_search(kind, query, mc=None, loader=None, limit=25):
     for m in cf_request("/mods/search", p).get("data", []):
         out.append({"id": str(m["id"]), "title": m["name"], "downloads": int(m.get("downloadCount", 0)),
                     "description": m.get("summary", ""), "blocked": m.get("allowModDistribution") is False,
-                    "url": (m.get("links") or {}).get("websiteUrl", "")})
+                    "url": (m.get("links") or {}).get("websiteUrl", ""),
+                    "icon": (m.get("logo") or {}).get("thumbnailUrl") or "",
+                    "author": ((m.get("authors") or [{}])[0] or {}).get("name", ""), "cats": [],
+                    "mc": ""})
     return out
 
 
@@ -1456,7 +1491,8 @@ class Core:
                 host, _, port = server.partition(":")
                 game += ["--server", host] + (["--port", port] if port else [])
         extra = shlex.split(inst.get("jvm_args", ""), posix=(os.name != "nt"))
-        cmd = [java, f"-Xmx{int(float(inst.get('ram_gb', 4)) * 1024)}M", *extra, *jvm,
+        perf = PERF_JVM.split() if inst.get("perf_flags") else []
+        cmd = [java, f"-Xmx{int(float(inst.get('ram_gb', 4)) * 1024)}M", *perf, *extra, *jvm,
                (profile or vanilla)["mainClass"], *game]
         return cmd, game_dir
 
@@ -2001,26 +2037,81 @@ class NavItem(tk.Canvas):
 
 
 class SmoothScroll:
-    """Eased, pixel-accurate mouse-wheel scrolling for a Canvas (Tk's own 'units' jump by a fifth of the window)."""
+    """Eased, pixel-accurate mouse-wheel scrolling for a Canvas (Tk's own 'units' jump by a fifth of the window).
+
+    One global wheel handler finds the widget under the pointer and walks up to the nearest scrollable canvas, so
+    scrolling keeps working when the pointer is over buttons, labels and cards inside the canvas."""
     NOTCH = 70
+    _installed = None
 
     def __init__(self, cv):
         self.cv, self.target, self._job = cv, None, None
         cv.configure(yscrollincrement=1)
+        cv._smooth = self
+        SmoothScroll.install(cv)
+
+    @classmethod
+    def install(cls, widget):
+        root = widget.winfo_toplevel()
+        if cls._installed is root.tk:
+            return
+        cls._installed = root.tk
+        cls.root = root
+        root.bind_all("<MouseWheel>", cls._on_wheel, add="+")
+        try:    # Tk 8.7 / 9 on macOS reports trackpad swipes as TouchpadScroll instead of MouseWheel
+            root.bind_all("<TouchpadScroll>", cls._on_touch, add="+")
+        except tk.TclError:
+            pass
+        root.bind_all("<Button-4>", lambda e: cls._dispatch(e, -1), add="+")
+        root.bind_all("<Button-5>", lambda e: cls._dispatch(e, 1), add="+")
+
+    @classmethod
+    def _find(cls, e):
+        try:
+            w = cls.root.winfo_containing(e.x_root, e.y_root)
+        except Exception:  # noqa: BLE001
+            w = None
+        while w is not None:
+            sm = getattr(w, "_smooth", None)
+            if sm is not None:
+                return sm
+            w = getattr(w, "master", None)
+        return None
+
+    @classmethod
+    def _on_wheel(cls, e):
+        try:
+            sm = cls._find(e)
+            if sm:
+                sm.wheel(e)
+        except Exception:  # noqa: BLE001
+            pass
+
+    @classmethod
+    def _on_touch(cls, e):
+        try:
+            sm = cls._find(e)
+            if sm:
+                d = cls.root.tk.call("tk::PreciseScrollDeltas", e.delta)
+                parts = cls.root.tk.splitlist(d) if not isinstance(d, (list, tuple)) else d
+                sm.by(-float(parts[1]) * 1.4)
+        except Exception:  # noqa: BLE001
+            pass
+
+    @classmethod
+    def _dispatch(cls, e, sign):
+        try:
+            sm = cls._find(e)
+            if sm:
+                sm.by(sign * cls.NOTCH)
+        except Exception:  # noqa: BLE001
+            pass
 
     def attach(self):
-        self.cv.bind("<Enter>", lambda _e: self.enable(True), add="+")
-        self.cv.bind("<Leave>", lambda _e: self.enable(False), add="+")
+        pass
 
     def enable(self, on):
-        cv = self.cv
-        if on:
-            cv.bind_all("<MouseWheel>", self.wheel)
-            cv.bind_all("<Button-4>", lambda _e: self.by(-self.NOTCH))
-            cv.bind_all("<Button-5>", lambda _e: self.by(self.NOTCH))
-        else:
-            for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-                cv.unbind_all(seq)
+        pass
 
     def wheel(self, e):
         if OS == "osx":
@@ -2316,6 +2407,7 @@ class EditInstanceDialog(Dialog):
         self.v_java = tk.StringVar(value=i.get("java", ""))
         self.v_args = tk.StringVar(value=i.get("jvm_args", ""))
         self.v_api = tk.BooleanVar(value=i.get("auto_fabric_api", True))
+        self.v_perf = tk.BooleanVar(value=bool(i.get("perf_flags")))
         self.v_w = tk.StringVar(value=str(i.get("width") or ""))
         self.v_h = tk.StringVar(value=str(i.get("height") or ""))
         self.v_full = tk.BooleanVar(value=bool(i.get("fullscreen")))
@@ -2348,7 +2440,9 @@ class EditInstanceDialog(Dialog):
         field_label(col, "Extra JVM arguments").grid(row=7, column=0, sticky="w", pady=(18, 6))
         entry(col, self.v_args).grid(row=8, column=0, sticky="ew")
         if loader_of(self.inst) == "fabric":
-            switch_row(col, "Keep Fabric API installed and up to date", self.v_api).grid(row=9, column=0, sticky="ew", pady=(22, 0))
+            switch_row(col, "Keep Fabric API installed and up to date", self.v_api).grid(row=9, column=0, sticky="ew", pady=(18, 0))
+        switch_row(col, "Optimized Java flags", self.v_perf, "Smoother frame times on most computers.").grid(
+            row=10, column=0, sticky="ew", pady=(14, 0))
 
         col2 = tk.Frame(f, bg=C["panel"])
         col2.grid(row=0, column=1, sticky="nsew", padx=(16, 0))
@@ -2373,6 +2467,14 @@ class EditInstanceDialog(Dialog):
         self.hue_row = tk.Frame(col2, bg=C["panel"])
         self.hue_row.grid(row=7, column=0, sticky="w")
         self.draw_hues()
+        field_label(col2, "Icon").grid(row=8, column=0, sticky="w", pady=(20, 8))
+        ir = tk.Frame(col2, bg=C["panel"])
+        ir.grid(row=9, column=0, sticky="w")
+        self.icon_prev = tk.Canvas(ir, width=48, height=48, bg=C["panel"], highlightthickness=0, bd=0)
+        self.icon_prev.pack(side="left", padx=(0, 12))
+        Btn(ir, "Choose image…", self.pick_icon, "secondary", h=36, size=9).pack(side="left")
+        Btn(ir, "Use default", self.reset_icon, "ghost", h=36, size=9).pack(side="left", padx=(6, 0))
+        self.draw_icon_prev()
         Btn(f, "Save changes", self.save, "primary", h=44).grid(row=1, column=0, columnspan=2, sticky="e", pady=(14, 0))
         f.grid_rowconfigure(0, weight=1)
         return f
@@ -2394,9 +2496,58 @@ class EditInstanceDialog(Dialog):
                 cv.create_arc(3, 3, 31, 31, start=45, extent=180, fill=c1, outline="")
             cv.bind("<Button-1>", lambda _e, h=h: self.set_hue(h))
 
+    def draw_icon_prev(self):
+        cv = self.icon_prev
+        cv.delete("all")
+        cv.create_image(4, 4, anchor="nw", image=inst_icon(cv, dict(self.inst, hue=self.hue), 40, 10))
+
+    def pick_icon(self):
+        p = filedialog.askopenfilename(parent=self, title="Choose an icon (PNG or GIF)", filetypes=ICON_TYPES)
+        if not p:
+            return
+        try:
+            probe = tk.PhotoImage(master=self, file=p)
+            if probe.width() < 8 or probe.height() < 8:
+                raise tk.TclError("too small")
+        except tk.TclError:
+            self.app.toast("Pick a PNG or GIF image", "err")
+            return
+        ext = ".gif" if p.lower().endswith(".gif") else ".png"
+        name = f"icon-{int(time.time())}{ext}"
+        try:
+            shutil.copyfile(p, INSTANCES / self.inst["id"] / name)
+        except OSError as e:
+            self.app.toast(f"Could not copy the image: {e}", "err")
+            return
+        self.drop_icon()
+        self.inst["icon"] = name
+        save_instance(self.inst)
+        self.draw_icon_prev()
+        self.app.refresh_instances(select=self.inst["id"])
+        self.app.toast("Icon updated")
+
+    def drop_icon(self):
+        old = custom_icon_path(self.inst)
+        if old:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        self.inst.pop("icon", None)
+
+    def reset_icon(self):
+        if not self.inst.get("icon"):
+            return
+        self.drop_icon()
+        save_instance(self.inst)
+        self.draw_icon_prev()
+        self.app.refresh_instances(select=self.inst["id"])
+        self.app.toast("Icon reset")
+
     def set_hue(self, h):
         self.hue = h
         self.draw_hues()
+        self.draw_icon_prev()
 
     def _ram(self):
         try:
@@ -2419,7 +2570,7 @@ class EditInstanceDialog(Dialog):
     def save(self):
         self.inst.update(name=self.v_name.get().strip() or self.inst["name"], ram_gb=self._ram(),
                          java=self.v_java.get().strip(), jvm_args=self.v_args.get().strip(),
-                         auto_fabric_api=self.v_api.get(), width=self._int(self.v_w.get()),
+                         auto_fabric_api=self.v_api.get(), perf_flags=self.v_perf.get(), width=self._int(self.v_w.get()),
                          height=self._int(self.v_h.get()), fullscreen=self.v_full.get(),
                          server=self.v_server.get().strip())
         if self.hue is None:
@@ -2443,187 +2594,420 @@ def inst_colors(seed, hue=None):
     return rgb_hex([v * 255 for v in a]), rgb_hex([v * 255 for v in b])
 
 
-class InstanceGrid(tk.Frame):
-    CW, CH, GAP, PAD, BH = 256, 184, 20, 32, 92
+ICON_TYPES = (("Images", "*.png *.gif"), ("PNG", "*.png"), ("GIF", "*.gif"))
+
+
+def custom_icon_path(inst):
+    name = inst.get("icon")
+    if not name:
+        return None
+    p = INSTANCES / inst["id"] / name
+    return p if p.is_file() else None
+
+
+def inst_icon(master, inst, size, radius):
+    """The instance's icon image: its custom picture if one was chosen, otherwise the generated gradient."""
+    p = custom_icon_path(inst)
+    if p:
+        key = ("icon", str(p), p.stat().st_mtime, size, radius)
+        if key in _IMGS:
+            return _IMGS[key]
+        try:
+            src = tk.PhotoImage(master=master, file=str(p))
+            w, h = src.width(), src.height()
+            s = min(w, h)
+            x0, y0 = (w - s) // 2, (h - s) // 2
+            sq = tk.PhotoImage(master=master, width=s, height=s)
+            sq.tk.call(sq.name, "copy", src.name, "-from", x0, y0, x0 + s, y0 + s, "-to", 0, 0)
+            k = max(1, s // size)
+            if k > 1:
+                sq = sq.subsample(k)
+            d = s // k
+            if d != size:
+                q = 8
+                pz = max(1, min(q, round(q * size / d)))
+                sq = sq.zoom(pz).subsample(q)
+            out = tk.PhotoImage(master=master, width=size, height=size)
+            ox = (size - sq.width()) // 2
+            oy = (size - sq.height()) // 2
+            out.tk.call(out.name, "copy", sq.name, "-from", 0, 0, min(sq.width(), size), min(sq.height(), size),
+                        "-to", max(0, ox), max(0, oy))
+            r = int(radius)
+            for dy in range(r):
+                for dx in range(r):
+                    if (r - dx - 0.5) ** 2 + (r - dy - 0.5) ** 2 > r * r:
+                        for px, py in ((dx, dy), (size - 1 - dx, dy), (dx, size - 1 - dy), (size - 1 - dx, size - 1 - dy)):
+                            out.transparency_set(px, py, True)
+            _IMGS[key] = out
+            return out
+        except (tk.TclError, OSError):
+            pass
+    c1, c2 = inst_colors(inst["id"], inst.get("hue"))
+    return grad_image(master, size, size, c1, c2, radius)
+
+
+NAVH, HERO = 64, 300
+
+
+def sky_at(y):
+    """Colour of the sunset sky at a vertical position (0 .. NAVH + HERO)."""
+    if C.get("tint", 1.0) == 0.0:
+        stops = [(0.0, "#7f9cf2"), (0.45, "#b39af0"), (0.75, "#f4a3b5"), (1.0, "#ffd0a0")]
+    else:
+        stops = [(0.0, "#0d0824"), (0.4, "#241150"), (0.7, "#6a2a78"), (0.88, "#d4566f"), (1.0, "#ff9b5e")]
+    f = max(0.0, min(1.0, y / float(NAVH + HERO)))
+    for (a, ca), (b, cb) in zip(stops, stops[1:]):
+        if f <= b:
+            return mix(ca, cb, (f - a) / (b - a))
+    return stops[-1][1]
+
+
+def paint_sky(cv, y0, y1, w, off):
+    """Paint the slice y0..y1 of the sky (canvas y = sky y - off), with stars in the dark theme."""
+    step = 4
+    for y in range(y0, y1, step):
+        cv.create_rectangle(0, y - off, w + 2, y + step - off, fill=sky_at(y + step / 2.0), outline="")
+    if C.get("tint", 1.0) == 0.0:
+        return
+    import random
+    rng = random.Random(11)
+    for _ in range(90):
+        sx, sy, br = rng.random(), rng.random() * 0.7 * (NAVH + HERO), rng.random()
+        if y0 <= sy < y1:
+            s = 1 if br < 0.7 else 2
+            x = sx * w
+            cv.create_rectangle(x, sy - off, x + s, sy - off + s, outline="",
+                                fill=mix(sky_at(sy), "#ffffff", 0.35 + 0.55 * br * (1 - sy / (NAVH + HERO))))
+
+
+def paint_horizon(cv, w, off):
+    """Sun and pixel skyline at the bottom of the hero (hero canvas coordinates: sky y - NAVH)."""
+    import random
+    cx, cy = w * 0.74, HERO - 70
+    for r, k in ((150, 0.10), (120, 0.18), (96, 0.30), (78, 1.0)):
+        col = mix(sky_at(NAVH + cy), "#ffb36b", k) if k < 1 else "#ffbe73"
+        cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill=col, outline="")
+    rng = random.Random(5)
+    layers = ((mix(sky_at(NAVH + HERO), C["bg"], 0.55), 78, 0), (C["bg"], 52, 1))
+    for col, maxh, front in layers:
+        x = -rng.randint(0, 30)
+        while x < w:
+            bw = rng.randint(22, 58)
+            bh = rng.randint(14, maxh)
+            cv.create_rectangle(x, HERO - bh, x + bw, HERO + 2, fill=col, outline="")
+            if front and bh > 26:
+                for wy in range(HERO - bh + 8, HERO - 8, 12):
+                    for wx in range(int(x) + 6, int(x) + bw - 6, 10):
+                        if rng.random() < 0.22:
+                            cv.create_rectangle(wx, wy, wx + 3, wy + 4, fill="#ffbf6b", outline="")
+            x += bw + rng.randint(0, 6)
+
+
+class TopBar(tk.Canvas):
+    """Sky strip with the pill navigation and the account chip."""
+    ITEMS = (("instances", "Home"), ("library", "Library"), ("modpacks", "Discover"), ("skins", "Skins"),
+             ("cursor", "Cursor"), ("console", "Console"), ("settings", "Settings"))
 
     def __init__(self, master, app):
-        super().__init__(master, bg=C["bg"])
-        self.app = app
-        self.cv = tk.Canvas(self, bg=C["bg"], highlightthickness=0, bd=0)
-        self.sb = ttk.Scrollbar(self.cv, orient="vertical", command=self.cv.yview)
-        self.cv.configure(yscrollcommand=self._sb_set)
-        self.cv.pack(fill="both", expand=True)
-        self.smooth = SmoothScroll(self.cv)
-        self.hit, self.hover, self._job = [], None, None
-        self.cw, self._imgs, self._cache = self.CW, [], {}
-        self.cv.bind("<Configure>", lambda _e: self.schedule())
-        self.cv.bind("<Motion>", self._motion)
-        self.cv.bind("<Button-1>", self._click)
-        self.cv.bind("<Double-Button-1>", self._double)
-        for seq in ("<Button-3>", "<Button-2>", "<Control-Button-1>"):
-            self.cv.bind(seq, self._context)
-        self.cv.bind("<Enter>", lambda _e: self._wheel(True))
-        self.cv.bind("<Leave>", lambda _e: (self._set_hover(None), self._wheel(False)), add="+")
+        super().__init__(master, height=NAVH, bg=sky_at(32), highlightthickness=0, bd=0)
+        self.app, self.active, self.hover = app, "instances", None
+        self.bind("<Configure>", lambda _e: self.draw())
 
-    # ---- scrolling
-    def _sb_set(self, lo, hi):
-        self.sb.set(lo, hi)
-        if float(lo) <= 0.0 and float(hi) >= 1.0:
-            self.sb.place_forget()
+    def set_active(self, name):
+        self.active = name
+        self.draw()
+
+    def _hover(self, key):
+        if key != self.hover:
+            self.hover = key
+            self.draw()
+
+    def draw(self):
+        cv = self
+        cv.delete("all")
+        w = max(cv.winfo_width(), 700)
+        paint_sky(cv, 0, NAVH, w, 0)
+        base = mix(sky_at(32), "#000000", 0.5)
+        f = font(10, "bold")
+        widths = [text_width(t, f) + 30 for _k, t in self.ITEMS]
+        x0, y0, y1 = 24, 12, NAVH - 12
+        rrect(cv, x0, y0, x0 + sum(widths) + 8, y1, 20, fill=base, outline=mix(base, "#ffffff", 0.14))
+        x = x0 + 4
+        for (key, text), wd in zip(self.ITEMS, widths):
+            tag = "nav_" + key
+            act, hov = key == self.active, key == self.hover
+            if act:
+                rrect(cv, x, y0 + 4, x + wd, y1 - 4, 16, fill=mix(base, C["accent"], 0.45), outline="", tags=tag)
+            elif hov:
+                rrect(cv, x, y0 + 4, x + wd, y1 - 4, 16, fill=mix(base, "#ffffff", 0.12), outline="", tags=tag)
+            cv.create_text(x + wd / 2, NAVH / 2, text=text, fill="#ffffff" if (act or hov) else "#c9c2e0", font=f, tags=tag)
+            cv.tag_bind(tag, "<Button-1>", lambda _e, k=key: self.app.show_page(k))
+            cv.tag_bind(tag, "<Enter>", lambda _e, k=key: (self.config(cursor="hand2"), self._hover(k)))
+            cv.tag_bind(tag, "<Leave>", lambda _e: (self.config(cursor=""), self._hover(None)))
+            x += wd
+        # account chip
+        a = self.app.current_account()
+        cw = 176
+        cx0 = w - 24 - cw
+        hov = self.hover == "chip"
+        rrect(cv, cx0, 10, cx0 + cw, NAVH - 10, 22, fill=mix(base, "#ffffff", 0.10) if hov else base,
+              outline=mix(base, "#ffffff", 0.2 if hov else 0.14), tags="chip")
+        if a:
+            draw_avatar(cv, cx0 + 8, 16, 32, acct_key(a), tag="chip")
+            cv.create_text(cx0 + 50, 26, text=fit_text(a["username"], font(9, "bold"), cw - 62), anchor="w",
+                           fill="#ffffff", font=font(9, "bold"), tags="chip")
+            cv.create_text(cx0 + 50, 40, text="Microsoft account", anchor="w", fill="#c9c2e0", font=font(7), tags="chip")
         else:
-            self.sb.place(relx=1.0, rely=0, relheight=1.0, anchor="ne", width=10)
+            cv.create_oval(cx0 + 8, 16, cx0 + 40, 48, fill=mix(base, "#ffffff", 0.12), outline="", tags="chip")
+            draw_icon(cv, "user", cx0 + 24, 32, 14, "#c9c2e0")
+            cv.create_text(cx0 + 50, 26, text="Not signed in", anchor="w", fill="#ffffff", font=font(9, "bold"), tags="chip")
+            cv.create_text(cx0 + 50, 40, text="Click to sign in", anchor="w", fill="#ffd9a8", font=font(7), tags="chip")
+        cv.tag_bind("chip", "<Button-1>", lambda _e: self.app.show_page("accounts"))
+        cv.tag_bind("chip", "<Enter>", lambda _e: (self.config(cursor="hand2"), self._hover("chip")))
+        cv.tag_bind("chip", "<Leave>", lambda _e: (self.config(cursor=""), self._hover(None)))
 
-    def banner(self, w, h, c1, c2):
-        key = (w, h, c1, c2)
-        if key not in self._cache:
-            self._cache[key] = grad_image(self.cv, w, h, c1, c2, 16, corners="top", cache=False)
-        return self._cache[key]
 
-    def _wheel(self, on):
-        self.smooth.enable(on)
+class InstanceList(tk.Canvas):
+    """The sidebar list of instances."""
+    RH, GAP = 58, 4
 
-    # ---- drawing
+    def __init__(self, master, app):
+        super().__init__(master, bg=C["side"], highlightthickness=0, bd=0)
+        self.app, self.hit, self.hover, self._job = app, [], None, None
+        self.smooth = SmoothScroll(self)
+        self.smooth.attach()
+        self.bind("<Configure>", lambda _e: self.schedule())
+        self.bind("<Motion>", lambda e: self._set_hover(self._at(e)))
+        self.bind("<Leave>", lambda _e: self._set_hover(None), add="+")
+        self.bind("<Button-1>", self._click)
+        self.bind("<Double-Button-1>", self._double)
+        for seq in ("<Button-3>", "<Button-2>", "<Control-Button-1>"):
+            self.bind(seq, self._context)
+
     def schedule(self):
         if self._job:
             self.after_cancel(self._job)
-        self._job = self.after(30, self.draw)
+        self._job = self.after(25, self.draw)
 
     def draw(self):
         self._job = None
-        cv = self.cv
+        cv = self
         cv.delete("all")
-        if len(self._cache) > 150:
-            self._cache.clear()
         self.hit = []
-        w = max(cv.winfo_width(), 400)
+        w = max(cv.winfo_width(), 200)
         insts = self.app.instances
         if not insts:
-            self._draw_empty(w)
+            cv.create_text(w / 2, 60, text="No instances yet", fill=C["muted"], font=font(10, "bold"))
+            cv.create_text(w / 2, 84, text="Press + to create one", fill=C["dim"], font=font(9))
             cv.configure(scrollregion=(0, 0, w, cv.winfo_height()))
             return
-        cols = max(1, (w - 2 * self.PAD + self.GAP) // (self.CW + self.GAP))
-        self.cw = min(340, (w - 2 * self.PAD - (cols - 1) * self.GAP) // cols)
-        items = insts + [None]
-        top = 14
-        for n, inst in enumerate(items):
-            r, c = divmod(n, cols)
-            x, y = self.PAD + c * (self.cw + self.GAP), top + r * (self.CH + self.GAP)
-            if inst is None:
-                self._draw_new(x, y)
-            else:
-                self._draw_card(inst, x, y)
-        rows = -(-len(items) // cols)
-        cv.configure(scrollregion=(0, 0, w, max(top + rows * (self.CH + self.GAP) + self.PAD, cv.winfo_height())))
+        y = 4
+        for inst in insts:
+            iid = inst["id"]
+            sel, hov = iid == self.app.sel_id, self.hover == iid
+            if sel:
+                rrect(cv, 8, y, w - 8, y + self.RH, 14, fill=C["nav_on"], outline=C["nav_on_bd"])
+            elif hov:
+                rrect(cv, 8, y, w - 8, y + self.RH, 14, fill=C["nav_hover"], outline=C["nav_hover"])
+            cv.create_image(18, y + 9, anchor="nw", image=inst_icon(cv, inst, 40, 10))
+            if not inst.get("icon"):
+                cv.create_text(38, y + 29, text=inst["version"].split("-")[0][:6], fill="#ffffff", font=font(8, "bold"))
+            cv.create_text(68, y + 21, text=fit_text(inst["name"], font(10, "bold"), w - 68 - 24), anchor="w",
+                           fill=C["text"] if (sel or hov) else mix(C["text"], C["muted"], 0.25), font=font(10, "bold"))
+            cv.create_text(68, y + 39, text=fit_text(f"{inst['version']}  ·  {loader_label(inst)}", font(8), w - 68 - 24),
+                           anchor="w", fill=C["muted"], font=font(8))
+            if sel and self.app.busy:
+                cv.create_oval(w - 26, y + 24, w - 18, y + 32, fill=C["accent"], outline="")
+            self.hit.append((8, y, w - 8, y + self.RH, iid))
+            y += self.RH + self.GAP
+        cv.configure(scrollregion=(0, 0, w, max(y + 4, cv.winfo_height())))
 
-    def _draw_empty(self, w):
-        cv = self.cv
-        cx, cy = w / 2, max(180, cv.winfo_height() / 2 - 30)
-        cv.create_oval(cx - 150, cy - 150, cx + 150, cy + 150, fill=C["sunk"], outline=C["sunk2"])
-        draw_logo(cv, cx - 44, cy - 124, 88)
-        cv.create_text(cx, cy - 12, text="Welcome to Spectra", fill=C["text"], font=font(20, "bold"))
-        cv.create_text(cx, cy + 34, text="Create an instance and pick a Minecraft version.\n"
-                       "Vanilla, Fabric, Quilt, Forge or NeoForge. Java is set up automatically.",
-                       fill=C["muted"], font=font(10), justify="center")
-        b = Btn(cv, "New instance", self.app.add_instance, "primary", h=46, bg=C["bg"], icon="plus")
-        cv.create_window(cx, cy + 100, window=b)
-
-    def _draw_new(self, x, y):
-        cv, w, h = self.cv, self.cw, self.CH
-        hov = self.hover == ("new", None)
-        rrect(cv, x, y, x + w, y + h, 18, fill=C["sunk"] if not hov else C["sunk_hov"],
-              outline=C["accent"] if hov else C["line2"], dash=(5, 5), width=2)
-        cx, cy = x + w / 2, y + h / 2 - 12
-        cv.create_oval(cx - 24, cy - 24, cx + 24, cy + 24, fill=C["card2"], outline=C["accent"] if hov else C["line2"])
-        draw_icon(cv, "plus", cx, cy, 22, C["accent"] if hov else C["muted"])
-        cv.create_text(cx, cy + 46, text="New instance", fill=C["text"] if hov else C["muted"], font=font(10, "bold"))
-        self.hit.append((x, y, x + w, y + h, "new", None))
-
-    def _draw_card(self, inst, x, y):
-        cv, w, h, bh = self.cv, self.cw, self.CH, self.BH
-        iid = inst["id"]
-        sel = iid == self.app.sel_id
-        hov = self.hover and self.hover[1] == iid
-        c1, c2 = inst_colors(inst["id"], inst.get("hue"))
-        rrect(cv, x + 2, y + 6, x + w + 2, y + h + 6, 18, fill=C["shadow"], outline="")
-        rrect(cv, x, y, x + w, y + h, 18, fill=C["card2"] if hov else C["card"],
-              outline=C["accent"] if sel else (C["line2"] if hov else C["line"]), width=2 if sel else 1)
-        cv.create_image(x + 2, y + 2, anchor="nw", image=self.banner(w - 4, bh, c1, c2))
-        # faceted decoration in the banner
-        lite = mix(c1, "#ffffff", 0.16)
-        cv.create_polygon(x + w - 150, y + bh + 1, x + w - 84, y + 14, x + w - 18, y + bh + 1,
-                          fill=mix(c2, "#ffffff", 0.10), outline="")
-        cv.create_polygon(x + w - 110, y + bh + 1, x + w - 84, y + 14, x + w - 52, y + bh + 1,
-                          fill=lite, outline="")
-        cv.create_text(x + 18, y + 22, text=inst["version"], anchor="w", fill="#ffffff", font=font(18, "bold"))
-        tag = loader_label(inst).upper()
-        fw = text_width(tag, font(7, "bold")) + 16
-        rrect(cv, x + 18, y + 46, x + 18 + fw, y + 64, 8, fill=mix(c2, "#000000", 0.35), outline="")
-        cv.create_text(x + 18 + fw / 2, y + 55, text=tag, fill="#e9fff3", font=font(7, "bold"))
-        nm = fit_text(inst["name"], font(12, "bold"), w - 36 - 50)
-        cv.create_text(x + 18, y + bh + 26, text=nm, anchor="w", fill=C["text"], font=font(12, "bold"))
-        mods = len(inst.get("mods", {}))
-        meta = f"{mods} mod{'s' if mods != 1 else ''}  ·  {inst.get('ram_gb', 4):g} GB"
-        cv.create_text(x + 18, y + bh + 50, text=meta, anchor="w", fill=C["muted"], font=font(9))
-        # hover actions
-        if hov or sel:
-            px, py = x + w - 38, y + bh + 4 + (h - bh) / 2 - 6
-            busy = self.app.busy
-            pc = C["dim"] if busy else (mix(C["accent"], "#ffffff", 0.2) if self.hover == ("play", iid) else C["accent"])
-            cv.create_oval(px - 19, py - 19, px + 19, py + 19, fill=pc, outline="")
-            draw_icon(cv, "play", px + 1, py, 20, C["ink"])
-            self.hit.insert(0, (px - 19, py - 19, px + 19, py + 19, "play", iid))
-            mx, my = x + w - 24, y + 24
-            cv.create_oval(mx - 14, my - 14, mx + 14, my + 14,
-                           fill=mix(c2, "#000000", 0.35 if self.hover != ("menu", iid) else 0.15), outline="")
-            for dx in (-6, 0, 6):
-                cv.create_oval(mx + dx - 1.8, my - 1.8, mx + dx + 1.8, my + 1.8, fill="#ffffff", outline="")
-            self.hit.insert(0, (mx - 14, my - 14, mx + 14, my + 14, "menu", iid))
-        self.hit.append((x, y, x + w, y + h, "card", iid))
-
-    # ---- interaction
     def _at(self, e):
-        x, y = self.cv.canvasx(e.x), self.cv.canvasy(e.y)
-        for x1, y1, x2, y2, kind, iid in self.hit:
+        x, y = self.canvasx(e.x), self.canvasy(e.y)
+        for x1, y1, x2, y2, iid in self.hit:
             if x1 <= x <= x2 and y1 <= y <= y2:
-                return (kind, iid)
+                return iid
         return None
 
-    def _motion(self, e):
-        self._set_hover(self._at(e))
-
-    def _set_hover(self, h):
-        if h != self.hover:
-            self.hover = h
-            self.cv.config(cursor="hand2" if h else "")
+    def _set_hover(self, iid):
+        if iid != self.hover:
+            self.hover = iid
+            self.config(cursor="hand2" if iid else "")
             self.draw()
 
     def _click(self, e):
-        h = self._at(e)
-        if not h:
-            return
-        kind, iid = h
-        if kind == "new":
-            self.app.add_instance()
-        elif kind == "play":
-            self.app.select(iid)
-            self.app.launch(iid)
-        elif kind == "menu":
-            self.app.select(iid)
-            self.app.card_menu(e, iid)
-        else:
+        iid = self._at(e)
+        if iid:
             self.app.select(iid)
 
     def _double(self, e):
-        h = self._at(e)
-        if h and h[0] == "card":
-            self.app.select(h[1])
-            self.app.launch(h[1])
+        iid = self._at(e)
+        if iid:
+            self.app.select(iid)
+            self.app.launch(iid)
 
     def _context(self, e):
-        h = self._at(e)
-        if h and h[1]:
-            self.app.select(h[1])
-            self.app.card_menu(e, h[1])
+        iid = self._at(e)
+        if iid:
+            self.app.select(iid)
+            self.app.card_menu(e, iid)
+
+
+class HomePage(tk.Frame):
+    """Hero banner for the selected instance with Play, plus an overview underneath."""
+
+    def __init__(self, master, app):
+        super().__init__(master, bg=C["bg"])
+        self.app, self._job, self._imgs = app, None, []
+        self.hero = tk.Canvas(self, height=HERO, bg=C["bg"], highlightthickness=0, bd=0)
+        self.hero.pack(fill="x")
+        self.scroll = ScrollFrame(self)
+        self.scroll.pack(fill="both", expand=True)
+        self.body = self.scroll.body
+        bgc = sky_at(NAVH + 198)
+        app.hero_play = Btn(self.hero, "PLAY", app.launch, "primary", w=176, h=52, size=12, r=16, bg=bgc, icon="play")
+        self.ver_box = tk.Canvas(self.hero, width=210, height=52, bg=bgc, highlightthickness=0, bd=0, cursor="hand2")
+        self.ver_box.bind("<Button-1>", lambda _e: app.edit_instance(app.sel_id))
+        self.folder_btn = Btn(self.hero, "Open folder", lambda: app.open_instance(), "secondary", w=132, h=52, r=16, bg=bgc)
+        self.new_btn = Btn(self.hero, "New instance", app.add_instance, "primary", w=190, h=52, r=16, bg=bgc, icon="plus")
+        self.hero.bind("<Configure>", lambda _e: self.schedule())
+
+    def schedule(self):
+        if self._job:
+            self.after_cancel(self._job)
+        self._job = self.after(30, self.draw_hero)
+
+    def draw_hero(self):
+        self._job = None
+        cv = self.hero
+        cv.delete("all")
+        w = max(cv.winfo_width(), 700)
+        paint_sky(cv, NAVH, NAVH + HERO, w, NAVH)
+        paint_horizon(cv, w, NAVH)
+        inst = self.app.instance_by_id(self.app.sel_id)
+        shade = mix(sky_at(NAVH + 40), "#000000", 0.5)
+
+        def chip(x, text):
+            fw = text_width(text, font(8, "bold")) + 22
+            rrect(cv, x, 24, x + fw, 48, 12, fill=shade, outline=mix(shade, "#ffffff", 0.14))
+            cv.create_text(x + fw / 2, 36, text=text, fill="#e9e4ff", font=font(8, "bold"))
+            return x + fw + 8
+
+        def title(x, y, text, size):
+            f = font(size, "bold")
+            cv.create_text(x + 2, y + 2, text=text, anchor="w", fill=mix(sky_at(NAVH + y), "#000000", 0.55), font=f)
+            cv.create_text(x, y, text=text, anchor="w", fill="#ffffff", font=f)
+
+        if inst:
+            x = chip(40, loader_label(inst).upper())
+            x = chip(x, f"MINECRAFT {inst['version']}")
+            chip(x, f"{inst.get('ram_gb', 4):g} GB")
+            c1, _c2 = inst_colors(inst["id"], inst.get("hue"))
+            if not inst.get("icon"):
+                cv.create_rectangle(38, 66, 126, 154, fill=mix(c1, "#ffffff", 0.25), outline="")
+            cv.create_image(40, 68, anchor="nw", image=inst_icon(cv, inst, 84, 16))
+            if not inst.get("icon"):
+                cv.create_text(82, 110, text=inst["version"].split("-")[0][:7], fill="#ffffff", font=font(11, "bold"))
+            title(144, 96, fit_text(inst["name"], font(30, "bold"), max(200, w - 144 - 40)), 30)
+            bits = [f"Played {fmt_playtime(inst['playtime_s'])}" if inst.get("playtime_s") else "Not played yet"]
+            if inst.get("last_played"):
+                bits.append("Last played " + time.strftime("%b %d", time.localtime(inst["last_played"])))
+            cv.create_text(144, 134, text="   ·   ".join(bits), anchor="w", fill="#f1e8ff", font=font(10))
+            cv.create_window(40, 172, anchor="nw", window=self.app.hero_play)
+            vb = self.ver_box
+            vb.delete("all")
+            rrect(vb, 1, 1, 209, 51, 16, fill=shade, outline=mix(shade, "#ffffff", 0.2))
+            vb.create_text(18, 17, text="VERSION", anchor="w", fill="#c9c2e0", font=font(7, "bold"))
+            vb.create_text(18, 35, text=fit_text(f"{inst['version']}  ·  {loader_label(inst)}", font(10, "bold"), 176),
+                           anchor="w", fill="#ffffff", font=font(10, "bold"))
+            cv.create_window(228, 172, anchor="nw", window=vb)
+            cv.create_window(450, 172, anchor="nw", window=self.folder_btn)
+        else:
+            chip(40, "WELCOME")
+            title(40, 96, "Welcome to Spectra", 30)
+            cv.create_text(42, 134, text="Create an instance and pick a Minecraft version. Java is set up for you.",
+                           anchor="w", fill="#f1e8ff", font=font(10))
+            cv.create_window(40, 172, anchor="nw", window=self.new_btn)
+
+    def refresh(self):
+        self.draw_hero()
+        self.build_body()
+
+    def build_body(self):
+        app = self.app
+        for ch in self.body.winfo_children():
+            ch.destroy()
+        self._imgs = []
+        inst = app.instance_by_id(app.sel_id)
+        row = tk.Frame(self.body, bg=C["bg"])
+        row.pack(fill="x", padx=32, pady=(16, 6))
+        for text, tab in (("Overview", None), ("Mods", "mods"), ("Worlds", "worlds"),
+                          ("Screenshots", "screenshots"), ("Settings", 0)):
+            if tab is None:
+                cmd = lambda: None
+            else:
+                cmd = lambda t=tab: app.edit_instance(app.sel_id, tab=t) if app.sel_id else app.toast("Create an instance first", "err")
+            n = NavItem(row, text, "", cmd)
+            n.configure(bg=C["bg"])
+            n._set(active=tab is None)
+            n.pack(side="left", padx=(0, 4))
+        if not inst:
+            self._steps()
+            return
+        tiles = tk.Frame(self.body, bg=C["bg"])
+        tiles.pack(fill="x", padx=32, pady=(8, 0))
+        data = (("PLAYTIME", fmt_playtime(inst["playtime_s"]) if inst.get("playtime_s") else "None yet"),
+                ("MODS INSTALLED", str(len(inst.get("mods", {})))),
+                ("MEMORY", f"{inst.get('ram_gb', 4):g} GB"))
+        for i, (k, v) in enumerate(data):
+            tiles.grid_columnconfigure(i, weight=1, uniform="t")
+            self._tile(tiles, k, v).grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 8, 0))
+        box = tk.Frame(self.body, bg=C["line"], padx=1, pady=1)
+        box.pack(fill="x", padx=32, pady=(14, 0))
+        inner = tk.Frame(box, bg=C["card"], padx=20, pady=16)
+        inner.pack(fill="x")
+        lbl(inner, "Screenshots", 12, "bold", bg=C["card"]).pack(anchor="w")
+        strip = tk.Frame(inner, bg=C["card"])
+        strip.pack(fill="x", pady=(10, 0))
+        shots = []
+        try:
+            d = game_dir_of(inst) / "screenshots"
+            shots = sorted(d.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)[:4]
+        except OSError:
+            pass
+        shown = 0
+        for p in shots:
+            try:
+                img = tk.PhotoImage(file=str(p))
+                img = img.subsample(max(1, -(-img.width() // 220)))
+            except tk.TclError:
+                continue
+            self._imgs.append(img)
+            tk.Label(strip, image=img, bd=0, bg=C["card"]).pack(side="left", padx=(0, 10))
+            shown += 1
+        if not shown:
+            lbl(strip, "No screenshots yet. Press F2 in the game to take one.", 10, color=C["muted"], bg=C["card"]).pack(anchor="w")
+        lbl(self.body, "Not an official Minecraft product. Not affiliated with Mojang or Microsoft.", 8, color=C["dim"]
+            ).pack(anchor="w", padx=32, pady=(14, 20))
+
+    def _tile(self, parent, k, v):
+        box = tk.Frame(parent, bg=C["line"], padx=1, pady=1)
+        inner = tk.Frame(box, bg=C["card"], padx=18, pady=14)
+        inner.pack(fill="x")
+        lbl(inner, k, 8, "bold", C["dim"], bg=C["card"]).pack(anchor="w")
+        lbl(inner, v, 16, "bold", bg=C["card"]).pack(anchor="w", pady=(4, 0))
+        return box
+
+    def _steps(self):
+        box = tk.Frame(self.body, bg=C["line"], padx=1, pady=1)
+        box.pack(fill="x", padx=32, pady=(10, 0))
+        inner = tk.Frame(box, bg=C["card"], padx=22, pady=18)
+        inner.pack(fill="x")
+        lbl(inner, "Get started", 12, "bold", bg=C["card"]).pack(anchor="w")
+        for n, t in enumerate(("Sign in with your Microsoft account (the chip at the top right).",
+                               "Press + in the sidebar to create an instance and pick a version and loader.",
+                               "Press Play. Java and the game files are downloaded automatically."), 1):
+            lbl(inner, f"{n}.  {t}", 10, color=C["muted"], bg=C["card"], anchor="w", justify="left").pack(anchor="w", pady=(8, 0))
 
 
 # --------------------------------------------------------------------------
@@ -4463,6 +4847,8 @@ class ContentTab(tk.Frame):
         self.msg.pack(side="left")
         Btn(foot, "Install selected + dependencies" if kind == "mods" else "Install selected", self.install,
             "primary", h=42).pack(side="right")
+        if kind == "mods":
+            Btn(foot, "Add performance mods", self.perf, "secondary", h=42).pack(side="right", padx=(0, 8))
         self.reload()
 
     # ---- locations
@@ -4522,6 +4908,17 @@ class ContentTab(tk.Frame):
                 t.pop(k)
             save_instance(self.inst)
             self.reload()
+
+    def perf(self):
+        self.msg.config(text="Installing performance mods…")
+
+        def done(_r):
+            if self.winfo_exists():
+                self.reload()
+                self.msg.config(text="Performance mods installed. Restart the game if it is running.")
+            self.app.refresh_instances()
+        self.app.bg(lambda: install_perf_mods(self.inst, self.app.log), done,
+                    lambda e: self.winfo_exists() and self.msg.config(text=f"Could not install: {e}"))
 
     # ---- search sources
     def set_source(self, key):
@@ -4856,39 +5253,365 @@ class ImportLaunchersDialog(Dialog):
         self.app.log(f"ERROR: {e}")
 
 
+def fmt_count(n):
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return "0"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M".replace(".0M", "M")
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K".replace(".0K", "K")
+    return str(n)
+
+
+def wrap_lines(text, fnt, width, max_lines=2):
+    """Greedy word wrap into at most max_lines lines, ending in an ellipsis when cut."""
+    words, lines, cur = (text or "").split(), [], ""
+    for i, wd in enumerate(words):
+        t = (cur + " " + wd).strip()
+        if text_width(t, fnt) <= width:
+            cur = t
+            continue
+        lines.append(cur)
+        cur = wd
+        if len(lines) == max_lines:
+            break
+    else:
+        if cur:
+            lines.append(cur)
+        return lines[:max_lines]
+    last = lines[-1] if lines else ""
+    return lines[:max_lines - 1] + [fit_text(last + "…", fnt, width)]
+
+
+def picture_icon(master, data, size, radius):
+    """A rounded square PhotoImage from raw PNG/GIF bytes, or None when Tk cannot read the format."""
+    try:
+        src = tk.PhotoImage(master=master, data=base64.b64encode(data))
+        w, h = src.width(), src.height()
+        s = min(w, h)
+        x0, y0 = (w - s) // 2, (h - s) // 2
+        sq = tk.PhotoImage(master=master, width=s, height=s)
+        sq.tk.call(sq.name, "copy", src.name, "-from", x0, y0, x0 + s, y0 + s, "-to", 0, 0)
+        k = max(1, s // size)
+        if k > 1:
+            sq = sq.subsample(k)
+        d = s // k
+        if d != size:
+            q = 8
+            sq = sq.zoom(max(1, min(q, round(q * size / d)))).subsample(q)
+        out = tk.PhotoImage(master=master, width=size, height=size)
+        out.tk.call(out.name, "copy", sq.name, "-from", 0, 0, min(sq.width(), size), min(sq.height(), size),
+                    "-to", max(0, (size - sq.width()) // 2), max(0, (size - sq.height()) // 2))
+        r = int(radius)
+        for dy in range(r):
+            for dx in range(r):
+                if (r - dx - 0.5) ** 2 + (r - dy - 0.5) ** 2 > r * r:
+                    for px, py in ((dx, dy), (size - 1 - dx, dy), (dx, size - 1 - dy), (size - 1 - dx, size - 1 - dy)):
+                        out.transparency_set(px, py, True)
+        return out
+    except (tk.TclError, ValueError, OSError):
+        return None
+
+
+def fetch_images(app, urls, ready):
+    """Download images on a background thread; ready((url, bytes_or_None)) runs on the UI thread for each."""
+    urls = [u for u in dict.fromkeys(urls) if u]
+
+    def run():
+        for u in urls:
+            try:
+                data = http_get(u, 15)
+                if len(data) > 4_000_000:
+                    data = None
+            except Exception:  # noqa: BLE001
+                data = None
+            app.q.put(("cb", ready, (u, data)))
+    if urls:
+        threading.Thread(target=run, daemon=True).start()
+
+
+def plain_text(md, limit=3500):
+    """Strip Markdown/HTML down to readable plain text."""
+    t = re.sub(r"<!--.*?-->", "", md or "", flags=re.S)
+    t = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", t)
+    t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", t)
+    t = re.sub(r"<br\s*/?>|</p>|</h\d>|</li>|</div>", "\n", t, flags=re.I)
+    t = re.sub(r"<[^>]+>", "", t)
+    t = re.sub(r"[`*_>#]+", "", t)
+    t = html.unescape(t)
+    t = re.sub(r"\n{3,}", "\n\n", t).strip()
+    return t[:limit] + ("…" if len(t) > limit else "")
+
+
+class CardGrid(tk.Canvas):
+    """A scrolling canvas of cards laid out in sections. draw_card(grid, item, x, y, w, h, hov) draws one card and
+    returns a list of (x1, y1, x2, y2, kind) hot spots; on_click(item, kind) handles clicks."""
+    PAD, GAP = 32, 16
+
+    def __init__(self, master, draw_card, on_click, cw=280, ch=160, on_menu=None, maxw=420):
+        super().__init__(master, bg=C["bg"], highlightthickness=0, bd=0)
+        self.draw_card, self.on_click, self.on_menu = draw_card, on_click, on_menu
+        self.cw, self.ch, self.maxw = cw, ch, maxw
+        self.sections, self.empty = [], "Nothing here yet."
+        self.hit, self.hover, self._job = [], None, None
+        self.smooth = SmoothScroll(self)
+        self.sb = ttk.Scrollbar(self, orient="vertical", command=self.yview)
+        self.configure(yscrollcommand=self._sb_set)
+        self.bind("<Configure>", lambda _e: self.schedule())
+        self.bind("<Motion>", lambda e: self._set_hover(self._at(e)))
+        self.bind("<Leave>", lambda _e: self._set_hover(None), add="+")
+        self.bind("<Button-1>", self._click)
+        for seq in ("<Button-3>", "<Button-2>", "<Control-Button-1>"):
+            self.bind(seq, self._menu)
+
+    def _sb_set(self, lo, hi):
+        self.sb.set(lo, hi)
+        if float(lo) <= 0.0 and float(hi) >= 1.0:
+            self.sb.place_forget()
+        else:
+            self.sb.place(relx=1.0, rely=0, relheight=1.0, anchor="ne", width=10)
+
+    def set_sections(self, sections, empty=None, keep_scroll=False):
+        self.sections = sections
+        if empty is not None:
+            self.empty = empty
+        if not keep_scroll:
+            self.yview_moveto(0)
+        self.draw()
+
+    def schedule(self):
+        if self._job:
+            self.after_cancel(self._job)
+        self._job = self.after(25, self.draw)
+
+    def draw(self):
+        self._job = None
+        self.delete("all")
+        self.hit = []
+        w = max(self.winfo_width(), 420)
+        total = sum(len(i) for _t, i in self.sections)
+        if not total and not any(t for t, _i in self.sections):
+            self.create_text(w / 2, 90, text=self.empty, fill=C["muted"], font=font(11), width=w - 120, justify="center")
+            self.configure(scrollregion=(0, 0, w, self.winfo_height()))
+            return
+        cols = max(1, (w - 2 * self.PAD + self.GAP) // (self.cw + self.GAP))
+        cardw = (w - 2 * self.PAD - (cols - 1) * self.GAP) // cols
+        if cols > 1:
+            cardw = min(cardw, self.maxw)
+        y = 10
+        for title, items in self.sections:
+            if title:
+                self.create_text(self.PAD, y + 16, text=title, anchor="w", fill=C["text"], font=font(13, "bold"))
+                y += 42
+            if not items:
+                self.create_text(self.PAD, y + 8, text="Nothing to show.", anchor="w", fill=C["muted"], font=font(10))
+                y += 40
+                continue
+            for n, item in enumerate(items):
+                r, c = divmod(n, cols)
+                x, yy = self.PAD + c * (cardw + self.GAP), y + r * (self.ch + self.GAP)
+                hov = self.hover[0] if self.hover and self.hover[1] is item else None
+                spots = self.draw_card(self, item, x, yy, cardw, self.ch, hov) or []
+                for x1, y1, x2, y2, kind in spots:
+                    self.hit.append((x1, y1, x2, y2, kind, item))
+                self.hit.append((x, yy, x + cardw, yy + self.ch, "card", item))
+            y += -(-len(items) // cols) * (self.ch + self.GAP) + 10
+        self.configure(scrollregion=(0, 0, w, max(y + 20, self.winfo_height())))
+
+    def _at(self, e):
+        x, y = self.canvasx(e.x), self.canvasy(e.y)
+        for x1, y1, x2, y2, kind, item in self.hit:
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                return (kind, item)
+        return None
+
+    def _set_hover(self, h):
+        old = self.hover
+        if (h and h[0], h and id(h[1])) != (old and old[0], old and id(old[1])):
+            self.hover = h
+            self.config(cursor="hand2" if h else "")
+            self.draw()
+
+    def _click(self, e):
+        h = self._at(e)
+        if h:
+            self.on_click(h[1], h[0])
+
+    def _menu(self, e):
+        h = self._at(e)
+        if h and self.on_menu:
+            self.on_menu(e, h[1])
+
+
+# --------------------------------------------------------------------------
+# Library: all instances as cover cards
+# --------------------------------------------------------------------------
+class LibraryPage(tk.Frame):
+    def __init__(self, master, app):
+        super().__init__(master, bg=C["bg"])
+        self.app = app
+        self.view, self.sort = self.app.cfg.get("library_view", "grid"), self.app.cfg.get("library_sort", "recent")
+        self.q = tk.StringVar()
+        _, right, self.sub = app.header(self, "Library", "")
+        Btn(right, "New instance", app.add_instance, "primary", h=42, icon="plus").pack()
+        bar = tk.Frame(self, bg=C["bg"])
+        bar.pack(fill="x", padx=32, pady=(0, 8))
+        self.view_btn = Btn(bar, "List view", self.toggle_view, "secondary", w=104, h=36, size=9, bg=C["bg"])
+        self.view_btn.pack(side="right")
+        self.sort_btns = {}
+        for key, text in (("recent", "Recent"), ("name", "Name"), ("played", "Most played")):
+            b = Btn(bar, text, lambda k=key: self.set_sort(k), "primary" if key == self.sort else "secondary",
+                    h=36, size=9, bg=C["bg"])
+            b.pack(side="right", padx=(0, 6))
+            self.sort_btns[key] = b
+        e = entry(bar, self.q, bg=C["card2"])
+        e.pack(side="left", fill="x", expand=True, padx=(0, 14))
+        self.q.trace_add("write", lambda *_: self.reload())
+        self.grid_view = CardGrid(self, self.draw_card, self.clicked, cw=250, ch=190, on_menu=self.menu)
+        self.grid_view.pack(fill="both", expand=True)
+        self.apply_view()
+
+    def apply_view(self):
+        g = self.grid_view
+        if self.view == "list":
+            g.cw, g.ch, g.maxw = 900, 76, 4000
+            self.view_btn.configure_text("Grid view")
+        else:
+            g.cw, g.ch, g.maxw = 250, 190, 420
+            self.view_btn.configure_text("List view")
+
+    def toggle_view(self):
+        self.view = "list" if self.view == "grid" else "grid"
+        self.app.cfg["library_view"] = self.view
+        self.app.save_cfg()
+        self.apply_view()
+        self.reload()
+
+    def set_sort(self, key):
+        self.sort = key
+        self.app.cfg["library_sort"] = key
+        self.app.save_cfg()
+        for k, b in self.sort_btns.items():
+            b.style = "primary" if k == key else "secondary"
+            b.draw()
+        self.reload()
+
+    def reload(self):
+        insts = list(self.app.instances)
+        s = self.q.get().strip().lower()
+        if s:
+            insts = [i for i in insts if s in i["name"].lower() or s in i["version"] or s in loader_label(i).lower()]
+        if self.sort == "name":
+            insts.sort(key=lambda i: i["name"].lower())
+        elif self.sort == "played":
+            insts.sort(key=lambda i: -int(i.get("playtime_s", 0)))
+        else:
+            insts.sort(key=lambda i: (-int(i.get("last_played", 0)), i["name"].lower()))
+        n = len(self.app.instances)
+        self.sub.config(text=f"{n} modpack{'s' if n != 1 else ''} and instance{'s' if n != 1 else ''}")
+        empty = "No matches." if s else "Your library is empty. Create an instance, or install a modpack from Discover."
+        self.grid_view.set_sections([(None, insts)], empty=empty, keep_scroll=True)
+
+    def draw_card(self, cv, inst, x, y, w, h, hov):
+        iid = inst["id"]
+        sel = iid == self.app.sel_id
+        c1, c2 = inst_colors(iid, inst.get("hue"))
+        custom = bool(inst.get("icon"))
+        spots = []
+        rrect(cv, x + 2, y + 5, x + w + 2, y + h + 5, 18, fill=C["shadow"], outline="")
+        rrect(cv, x, y, x + w, y + h, 18, fill=C["card2"] if hov else C["card"],
+              outline=C["accent"] if sel else (C["line2"] if hov else C["line"]), width=2 if sel else 1)
+        meta = f"{inst['version']}  ·  {loader_label(inst)}  ·  {len(inst.get('mods', {}))} mods"
+        played = f"Played {fmt_playtime(inst['playtime_s'])}" if inst.get("playtime_s") else "Not played yet"
+        if self.view == "list":
+            cv.create_image(x + 14, y + 12, anchor="nw", image=inst_icon(cv, inst, 52, 12))
+            if not custom:
+                cv.create_text(x + 40, y + 38, text=inst["version"].split("-")[0][:6], fill="#ffffff", font=font(8, "bold"))
+            cv.create_text(x + 82, y + 28, text=fit_text(inst["name"], font(11, "bold"), w - 360), anchor="w",
+                           fill=C["text"], font=font(11, "bold"))
+            cv.create_text(x + 82, y + 50, text=fit_text(meta, font(9), w - 360), anchor="w", fill=C["muted"], font=font(9))
+            cv.create_text(x + w - 120, y + h / 2, text=played, anchor="e", fill=C["muted"], font=font(9))
+            px, py = x + w - 42, y + h / 2
+            pc = C["dim"] if self.app.busy else (mix(C["accent"], "#ffffff", 0.2) if hov == "play" else C["accent"])
+            cv.create_oval(px - 18, py - 18, px + 18, py + 18, fill=pc, outline="")
+            draw_icon(cv, "play", px + 1, py, 18, C["ink"])
+            spots.append((px - 18, py - 18, px + 18, py + 18, "play"))
+            return spots
+        bh = 104
+        cv.create_image(x + 2, y + 2, anchor="nw", image=grad_image(cv, w - 4, bh, c1, c2, 16, corners="top", cache=True))
+        if custom:
+            cv.create_image(x + w / 2, y + bh / 2 + 2, image=inst_icon(cv, inst, 72, 16))
+        else:
+            cv.create_polygon(x + w - 150, y + bh + 1, x + w - 84, y + 14, x + w - 18, y + bh + 1,
+                              fill=mix(c2, "#ffffff", 0.10), outline="")
+            cv.create_text(x + 18, y + 26, text=inst["version"], anchor="w", fill="#ffffff", font=font(18, "bold"))
+            tag = loader_label(inst).upper()
+            fw = text_width(tag, font(7, "bold")) + 16
+            rrect(cv, x + 18, y + 52, x + 18 + fw, y + 70, 8, fill=mix(c2, "#000000", 0.35), outline="")
+            cv.create_text(x + 18 + fw / 2, y + 61, text=tag, fill="#e9fff3", font=font(7, "bold"))
+        cv.create_text(x + 18, y + bh + 26, text=fit_text(inst["name"], font(12, "bold"), w - 36 - 44), anchor="w",
+                       fill=C["text"], font=font(12, "bold"))
+        cv.create_text(x + 18, y + bh + 50, text=fit_text(played, font(9), w - 36 - 44), anchor="w", fill=C["muted"], font=font(9))
+        if hov or sel:
+            px, py = x + w - 36, y + bh + 36
+            pc = C["dim"] if self.app.busy else (mix(C["accent"], "#ffffff", 0.2) if hov == "play" else C["accent"])
+            cv.create_oval(px - 18, py - 18, px + 18, py + 18, fill=pc, outline="")
+            draw_icon(cv, "play", px + 1, py, 18, C["ink"])
+            spots.insert(0, (px - 18, py - 18, px + 18, py + 18, "play"))
+            mx, my = x + w - 24, y + 24
+            cv.create_oval(mx - 14, my - 14, mx + 14, my + 14, fill=mix(c2, "#000000", 0.35 if hov != "menu" else 0.15), outline="")
+            for dx in (-6, 0, 6):
+                cv.create_oval(mx + dx - 1.8, my - 1.8, mx + dx + 1.8, my + 1.8, fill="#ffffff", outline="")
+            spots.insert(0, (mx - 14, my - 14, mx + 14, my + 14, "menu"))
+        return spots
+
+    def clicked(self, inst, kind):
+        iid = inst["id"]
+        self.app.select(iid)
+        if kind == "play":
+            self.app.launch(iid)
+        elif kind == "menu":
+            e = type("E", (), {})()
+            e.x_root, e.y_root = self.winfo_pointerx(), self.winfo_pointery()
+            self.app.card_menu(e, iid)
+        else:
+            self.app.show_page("instances")
+
+    def menu(self, e, inst):
+        self.app.select(inst["id"])
+        self.app.card_menu(e, inst["id"])
+
+
+# --------------------------------------------------------------------------
+# Discover: browse and install modpacks
+# --------------------------------------------------------------------------
 class ModpacksPage(tk.Frame):
     def __init__(self, master, app):
         super().__init__(master, bg=C["bg"])
-        self.app, self.loaded, self.source = app, False, "modrinth"
-        _, right, _ = app.header(self, "Modpacks", "Install a whole modpack from Modrinth or CurseForge as a new instance.")
+        self.app, self.loaded, self.source, self.installing = app, False, "modrinth", False
+        self.icons, self.pending = {}, set()
+        _, right, self.sub = app.header(self, "Discover", "Find a modpack on Modrinth or CurseForge and install it in one click.")
         Btn(right, "Import file…", self.import_file, "secondary", h=42).pack(side="right")
         Btn(right, "From other launchers…", self.import_launchers, "secondary", h=42).pack(side="right", padx=(0, 8))
-        body = tk.Frame(self, bg=C["bg"])
-        body.pack(fill="both", expand=True, padx=32, pady=(6, 20))
-        bar = tk.Frame(body, bg=C["bg"])
-        bar.pack(fill="x", pady=(0, 10))
+        bar = tk.Frame(self, bg=C["bg"])
+        bar.pack(fill="x", padx=32, pady=(0, 8))
         self.q = tk.StringVar()
-        Btn(bar, "Search", self.search, "secondary", h=38, bg=C["bg"]).pack(side="right", padx=(8, 0))
+        Btn(bar, "Search", self.search, "primary", h=38, bg=C["bg"]).pack(side="right", padx=(8, 0))
         self.src_btns = {}
         for key, name in (("modrinth", "Modrinth"), ("curseforge", "CurseForge")):
-            b = Btn(bar, name, lambda k=key: self.set_source(k), "primary" if key == "modrinth" else "secondary",
-                    h=38, bg=C["bg"])
+            b = Btn(bar, name, lambda k=key: self.set_source(k), "secondary" if key != "modrinth" else "primary",
+                    h=38, size=9, bg=C["bg"])
             b.pack(side="left", padx=(0, 6))
             self.src_btns[key] = b
         e = entry(bar, self.q, bg=C["card2"])
-        e.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        e.pack(side="left", fill="x", expand=True, padx=(8, 0))
         e.entry.bind("<Return>", lambda _e: self.search())
-        foot = tk.Frame(body, bg=C["bg"])
-        foot.pack(side="bottom", fill="x", pady=(12, 0))
-        box, self.res = tree_box(body, ("title", "dl", "mc", "desc"), ("MODPACK", "DOWNLOADS", "MINECRAFT", "DESCRIPTION"),
-                                 (210, 100, 90, 360), "desc", height=8)
-        box.pack(fill="both", expand=True)
-        self.msg = lbl(foot, "Modpacks are installed as a new instance. Import files from Modrinth, CurseForge, "
-                             "Prism, MultiMC or Spectra.", 9, color=C["muted"], bg=C["bg"])
-        self.msg.pack(side="left")
-        self.btn = Btn(foot, "Install selected", self.install, "primary", h=42, bg=C["bg"])
-        self.btn.pack(side="right")
-        self.hits = {}
+        self.msg = lbl(self, "", 9, color=C["muted"], bg=C["bg"], anchor="w")
+        self.msg.pack(fill="x", padx=34, pady=(0, 2))
+        self.grid_view = CardGrid(self, self.draw_card, self.clicked, cw=300, ch=172, maxw=400)
+        self.grid_view.pack(fill="both", expand=True)
 
     def shown(self):
         if not self.loaded:
@@ -4900,51 +5623,108 @@ class ModpacksPage(tk.Frame):
         for k, b in self.src_btns.items():
             b.style = "primary" if k == key else "secondary"
             b.draw()
-        self.res.delete(*self.res.get_children())
         self.search()
 
+    # ---- searching
     def search(self):
-        if self.source == "curseforge":
-            return self.search_cf()
-        facets = json.dumps([["project_type:modpack"]])
-        url = f"{MODRINTH}/search?" + urllib.parse.urlencode(
-            {"query": self.q.get().strip(), "facets": facets, "limit": 40, "index": "downloads"})
-        self.msg.config(text="Searching…")
-
-        def done(data):
-            if self.source != "modrinth":
-                return
-            self.res.delete(*self.res.get_children())
-            self.hits = {}
-            for h in data.get("hits", []):
-                self.hits[h["project_id"]] = h
-                vs = h.get("versions") or []
-                self.res.insert("", "end", iid=h["project_id"],
-                                values=(h["title"], f"{h['downloads']:,}", vs[-1] if vs else "", h["description"]))
-            self.msg.config(text=f"{len(data.get('hits', []))} modpack(s).")
-        self.app.bg(lambda: get_json(url), done, lambda e: self.msg.config(text=f"Search failed: {e}"))
-
-    def search_cf(self):
-        if not CF_KEY:
-            self.res.delete(*self.res.get_children())
-            self.msg.config(text="CurseForge needs an API key. Add yours in Settings (it's free).")
-            return
         q = self.q.get().strip()
-        self.msg.config(text="Searching CurseForge…")
-
-        def done(hits):
-            if self.source != "curseforge":
+        self.tok = getattr(self, "tok", 0) + 1
+        tok, src = self.tok, self.source
+        self.msg.config(text="Searching…" if q else "Loading popular modpacks…")
+        if src == "curseforge":
+            if not CF_KEY:
+                self.grid_view.set_sections([], empty="CurseForge needs an API key. Add yours in Settings; it is free.")
+                self.msg.config(text="")
                 return
-            self.res.delete(*self.res.get_children())
-            for h in hits:
-                title = h["title"] + ("  (manual)" if h["blocked"] else "")
-                self.res.insert("", "end", iid=h["id"], values=(title, f"{h['downloads']:,}", "", h["description"]))
-            self.msg.config(text=f"{len(hits)} modpack(s) from CurseForge.")
-        self.app.bg(lambda: cf_search("modpack", q, limit=40), done, lambda e: self.msg.config(text=f"Search failed: {e}"))
+            fn = lambda: [(("Results for “" + q + "”") if q else "Popular on CurseForge", cf_search("modpack", q, limit=40))]
+        else:
+            def mr(index, limit, query=q):
+                data = get_json(f"{MODRINTH}/search?" + urllib.parse.urlencode(
+                    {"query": query, "facets": json.dumps([["project_type:modpack"]]), "limit": limit, "index": index}))
+                return [self.norm_mr(h) for h in data.get("hits", [])]
+            if q:
+                fn = lambda: [(f"Results for “{q}”", mr("relevance", 40))]
+            else:
+                fn = lambda: [("Popular modpacks", mr("downloads", 24)), ("Recently updated", mr("updated", 12))]
 
+        def done(sections):
+            if tok != self.tok:
+                return
+            self.msg.config(text="")
+            self.grid_view.set_sections(sections, empty="No modpacks found.")
+            self.load_icons([it for _t, items in sections for it in items])
+
+        def fail(e):
+            if tok == self.tok:
+                self.msg.config(text=f"Search failed: {e}")
+        self.app.bg(fn, done, fail)
+
+    @staticmethod
+    def norm_mr(h):
+        vs = h.get("versions") or []
+        return {"id": h["project_id"], "source": "modrinth", "title": h["title"], "author": h.get("author", ""),
+                "description": h.get("description", ""), "downloads": h.get("downloads", 0),
+                "follows": h.get("follows", 0), "mc": vs[-1] if vs else "", "icon": h.get("icon_url") or "",
+                "cats": h.get("display_categories") or h.get("categories") or [], "slug": h.get("slug", h["project_id"]),
+                "url": f"https://modrinth.com/modpack/{h.get('slug', h['project_id'])}", "blocked": False}
+
+    def load_icons(self, items):
+        for it in items:
+            it.setdefault("source", self.source)
+        urls = [it["icon"] for it in items if it.get("icon") and it["icon"] not in self.icons and it["icon"] not in self.pending]
+        self.pending.update(urls)
+        fetch_images(self.app, urls, self.icon_ready)
+
+    def icon_ready(self, arg):
+        url, data = arg
+        self.pending.discard(url)
+        self.icons[url] = picture_icon(self.grid_view, data, 64, 14) if data else None
+        self.grid_view.schedule()
+
+    # ---- cards
+    def draw_card(self, cv, it, x, y, w, h, hov):
+        rrect(cv, x + 2, y + 5, x + w + 2, y + h + 5, 18, fill=C["shadow"], outline="")
+        rrect(cv, x, y, x + w, y + h, 18, fill=C["card2"] if hov else C["card"], outline=C["line2"] if hov else C["line"])
+        img = self.icons.get(it.get("icon"))
+        if img:
+            cv.create_image(x + 16, y + 16, anchor="nw", image=img)
+        else:
+            c1, c2 = inst_colors(it["id"] + it["title"])
+            cv.create_image(x + 16, y + 16, anchor="nw", image=grad_image(cv, 64, 64, c1, c2, 14))
+            cv.create_text(x + 48, y + 48, text=(it["title"][:1] or "?").upper(), fill="#ffffff", font=font(20, "bold"))
+        tx = x + 92
+        cv.create_text(tx, y + 30, text=fit_text(it["title"], font(11, "bold"), w - 92 - 16), anchor="w",
+                       fill=C["text"], font=font(11, "bold"))
+        who = ("by " + it["author"]) if it.get("author") else it.get("source", "").title()
+        cv.create_text(tx, y + 50, text=fit_text(who, font(9), w - 92 - 16), anchor="w", fill=C["muted"], font=font(9))
+        cats = "  ·  ".join(c.title() for c in (it.get("cats") or [])[:2])
+        cv.create_text(tx, y + 68, text=fit_text(cats, font(8), w - 92 - 16), anchor="w", fill=C["dim"], font=font(8))
+        for n, line in enumerate(wrap_lines(it.get("description", ""), font(9), w - 32, 2)):
+            cv.create_text(x + 16, y + 94 + n * 16, text=line, anchor="w", fill=C["muted"], font=font(9))
+        by = y + h - 30
+        stat = f"{fmt_count(it.get('downloads', 0))} downloads"
+        if it.get("mc"):
+            stat += f"  ·  {it['mc']}"
+        cv.create_text(x + 16, by + 2, text=fit_text(stat, font(8, "bold"), w - 130), anchor="w", fill=C["dim"], font=font(8, "bold"))
+        bw = 76
+        bx1, by1 = x + w - 16 - bw, by - 12
+        on = hov == "install"
+        label = "Manual" if it.get("blocked") else "Install"
+        rrect(cv, bx1, by1, bx1 + bw, by1 + 28, 12, fill=mix(C["accent"], "#ffffff", 0.18) if on else C["accent"], outline="")
+        cv.create_text(bx1 + bw / 2, by1 + 14, text=label, fill=C["ink"], font=font(9, "bold"))
+        return [(bx1, by1, bx1 + bw, by1 + 28, "install")]
+
+    def clicked(self, it, kind):
+        if kind == "install":
+            self.install_id(it["id"], it.get("source", self.source))
+        else:
+            self.app.pages["detail"].open(it.get("source", self.source), it, self.icons.get(it.get("icon")))
+
+    # ---- installing
     def finish(self, inst):
+        self.installing = False
         self.app.q.put(("status", "Ready", 0))
-        self.btn.set_enabled(True)
+        self.msg.config(text="")
         self.app.refresh_instances(select=inst["id"])
         self.app.show_page("instances")
         self.app.toast(f"Installed {inst['name']}")
@@ -4952,27 +5732,28 @@ class ModpacksPage(tk.Frame):
             ManualDialog(self.app, inst)
 
     def fail(self, e):
+        self.installing = False
         self.app.q.put(("status", "Ready", 0))
-        self.btn.set_enabled(True)
         self.msg.config(text=f"Install failed: {e}")
         self.app.log(f"ERROR: {e}")
+        self.app.toast("Install failed", "err")
 
-    def install(self):
-        sel = self.res.selection()
-        if not sel:
-            self.msg.config(text="Select a modpack first.")
+    def install_id(self, pid, source):
+        if self.installing:
+            self.app.toast("An install is already running", "err")
             return
-        self.btn.set_enabled(False)
+        self.installing = True
         self.msg.config(text="Installing… watch the bar at the bottom. Large packs can take a while.")
-        fn = install_cf_modpack if self.source == "curseforge" else install_modrinth_pack
-        self.app.bg(lambda: fn(sel[0], self.app.log, self.app.progress), self.finish, self.fail)
+        self.app.toast("Installing modpack…")
+        fn = install_cf_modpack if source == "curseforge" else install_modrinth_pack
+        self.app.bg(lambda: fn(pid, self.app.log, self.app.progress), self.finish, self.fail)
 
     def import_file(self):
         p = filedialog.askopenfilename(parent=self.app.root, title="Import a modpack or instance",
                                        filetypes=[("Modpack or instance", "*.mrpack *.zip"), ("All files", "*.*")])
         if not p:
             return
-        self.btn.set_enabled(False)
+        self.installing = True
         self.app.bg(lambda: import_any(p, self.app.log, self.app.progress), self.finish, self.fail)
 
     def import_launchers(self):
@@ -4982,6 +5763,157 @@ class ModpacksPage(tk.Frame):
         self.app.refresh_instances(select=insts[-1]["id"])
         self.app.show_page("instances")
         self.app.toast(f"Imported {len(insts)} instance(s)")
+
+
+# --------------------------------------------------------------------------
+# Modpack detail page
+# --------------------------------------------------------------------------
+class PackDetailPage(tk.Frame):
+    def __init__(self, master, app):
+        super().__init__(master, bg=C["bg"])
+        self.app, self.tok, self.imgs, self.shot_box = app, 0, [], None
+        self.sf = ScrollFrame(self)
+        self.sf.pack(fill="both", expand=True)
+        self.body = self.sf.body
+
+    def card(self, title):
+        box = tk.Frame(self.body, bg=C["line"], padx=1, pady=1)
+        box.pack(fill="x", padx=32, pady=(0, 14))
+        inner = tk.Frame(box, bg=C["card"], padx=22, pady=18)
+        inner.pack(fill="x")
+        lbl(inner, title, 12, "bold", bg=C["card"]).pack(anchor="w")
+        return inner
+
+    def open(self, source, it, icon):
+        self.tok += 1
+        tok = self.tok
+        for ch in self.body.winfo_children():
+            ch.destroy()
+        self.imgs = [icon] if icon else []
+        app = self.app
+        top = tk.Frame(self.body, bg=C["bg"])
+        top.pack(fill="x", padx=32, pady=(18, 10))
+        Btn(top, "‹  Back to Discover", lambda: app.show_page("modpacks"), "secondary", h=34, size=9, bg=C["bg"]).pack(side="left")
+        head = tk.Frame(self.body, bg=C["bg"])
+        head.pack(fill="x", padx=32, pady=(4, 12))
+        ic = tk.Canvas(head, width=100, height=100, bg=C["bg"], highlightthickness=0, bd=0)
+        ic.pack(side="left", padx=(0, 20))
+        big = None
+        if it.get("icon"):
+            pass
+        if icon:
+            ic.create_image(50, 50, image=icon)
+            ic.create_rectangle(1, 1, 1, 1, outline="")
+        else:
+            c1, c2 = inst_colors(it["id"] + it["title"])
+            ic.create_image(50, 50, image=grad_image(ic, 88, 88, c1, c2, 18))
+            ic.create_text(50, 50, text=(it["title"][:1] or "?").upper(), fill="#ffffff", font=font(30, "bold"))
+        info = tk.Frame(head, bg=C["bg"])
+        info.pack(side="left", fill="x", expand=True)
+        lbl(info, it["title"], 24, "bold", bg=C["bg"]).pack(anchor="w")
+        who = ("by " + it["author"] + "   ·   ") if it.get("author") else ""
+        lbl(info, f"{who}{source.title()}", 10, color=C["muted"], bg=C["bg"]).pack(anchor="w", pady=(2, 8))
+        chips = tk.Frame(info, bg=C["bg"])
+        chips.pack(anchor="w")
+        bits = [f"{fmt_count(it.get('downloads', 0))} downloads"]
+        if it.get("follows"):
+            bits.append(f"{fmt_count(it['follows'])} followers")
+        if it.get("mc"):
+            bits.append(f"Minecraft {it['mc']}")
+        bits += [c.title() for c in (it.get("cats") or [])[:3]]
+        for b in bits:
+            pill(chips, b, C["text"], C["card2"], C["line2"]).pack(side="left", padx=(0, 6))
+        acts = tk.Frame(info, bg=C["bg"])
+        acts.pack(anchor="w", pady=(14, 0))
+        Btn(acts, "Install modpack", lambda: app.pages["modpacks"].install_id(it["id"], source), "primary", h=44, bg=C["bg"]).pack(side="left")
+        if it.get("url"):
+            Btn(acts, "View on website", lambda: webbrowser.open(it["url"]), "secondary", h=44, bg=C["bg"]).pack(side="left", padx=8)
+        about = self.card("About")
+        self.about = lbl(about, it.get("description", ""), 10, color=C["text"], bg=C["card"], wraplength=780, justify="left")
+        self.about.pack(anchor="w", pady=(8, 0))
+        shots = self.card("Gallery")
+        self.shot_row = tk.Frame(shots, bg=C["card"])
+        self.shot_row.pack(fill="x", pady=(10, 0))
+        self.shot_note = lbl(self.shot_row, "Loading…", 10, color=C["muted"], bg=C["card"])
+        self.shot_note.pack(anchor="w")
+        vers = self.card("Recent versions")
+        self.ver_box = tk.Frame(vers, bg=C["card"])
+        self.ver_box.pack(fill="x", pady=(8, 0))
+        lbl(self.ver_box, "Loading…", 10, color=C["muted"], bg=C["card"]).pack(anchor="w")
+        lbl(self.body, "Not an official Minecraft product. Spectra installs modpacks as published by their authors.", 8,
+            color=C["dim"], bg=C["bg"]).pack(anchor="w", padx=32, pady=(0, 20))
+        app.show_page("detail")
+        self.sf.cv.yview_moveto(0)
+
+        if source == "curseforge":
+            def work():
+                d = cf_request(f"/mods/{it['id']}").get("data", {})
+                try:
+                    desc = cf_request(f"/mods/{it['id']}/description").get("data", "")
+                except IOError:
+                    desc = ""
+                return {"text": plain_text(desc) or d.get("summary", ""),
+                        "shots": [s.get("thumbnailUrl") or s.get("url") for s in d.get("screenshots", [])][:6],
+                        "versions": [f"{f.get('displayName', f.get('fileName', ''))}   ·   "
+                                     f"{', '.join(v for v in f.get('gameVersions', []) if v[:1].isdigit())[:60]}   ·   "
+                                     f"{str(f.get('fileDate', ''))[:10]}" for f in d.get("latestFiles", [])[:8]],
+                        "url": (d.get("links") or {}).get("websiteUrl", "")}
+        else:
+            def work():
+                p = get_json(f"{MODRINTH}/project/{it['id']}")
+                vs = get_json(f"{MODRINTH}/project/{it['id']}/version")
+                return {"text": plain_text(p.get("body", "")) or p.get("description", ""),
+                        "shots": [g.get("url") for g in p.get("gallery", [])][:6],
+                        "versions": [f"{v.get('version_number', '')}   ·   {', '.join(v.get('game_versions', [])[-3:])}   ·   "
+                                     f"{', '.join(v.get('loaders', []))}   ·   {str(v.get('date_published', ''))[:10]}"
+                                     for v in vs[:8]]}
+
+        def done(d):
+            if tok != self.tok:
+                return
+            if d.get("text"):
+                self.about.config(text=d["text"])
+            for ch in self.ver_box.winfo_children():
+                ch.destroy()
+            if not d["versions"]:
+                lbl(self.ver_box, "No version information.", 10, color=C["muted"], bg=C["card"]).pack(anchor="w")
+            for v in d["versions"]:
+                lbl(self.ver_box, v, 10, color=C["muted"], bg=C["card"], anchor="w").pack(anchor="w", pady=2)
+            if not d["shots"]:
+                self.shot_note.config(text="No screenshots.")
+            else:
+                self.shot_urls = list(d["shots"])
+                self.shot_left = len(d["shots"])
+                fetch_images(app, d["shots"], lambda a: self.shot_ready(tok, a))
+
+        def fail(e):
+            if tok == self.tok:
+                self.shot_note.config(text="Could not load more details.")
+                for ch in self.ver_box.winfo_children():
+                    ch.destroy()
+                lbl(self.ver_box, f"Could not load: {e}", 10, color=C["muted"], bg=C["card"]).pack(anchor="w")
+        app.bg(work, done, fail)
+
+    def shot_ready(self, tok, arg):
+        if tok != self.tok:
+            return
+        url, data = arg
+        self.shot_note.pack_forget()
+        img = None
+        if data:
+            try:
+                src = tk.PhotoImage(master=self, data=base64.b64encode(data))
+                img = src.subsample(max(1, -(-src.width() // 230)))
+            except tk.TclError:
+                img = None
+        if img:
+            self.imgs.append(img)
+            lb = tk.Label(self.shot_row, image=img, bd=0, bg=C["card"], cursor="hand2")
+            lb.pack(side="left", padx=(0, 10))
+            lb.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u))
+        elif not self.shot_row.winfo_children():
+            self.shot_note.pack(anchor="w")
+            self.shot_note.config(text="Screenshots are in a format this launcher cannot show. Open the website to see them.")
 
 
 class ScrollFrame(tk.Frame):
@@ -5058,7 +5990,7 @@ class SettingsPage(tk.Frame):
         self.key_entry.pack(side="left", fill="x", expand=True)
         hint(c, "CurseForge only lets apps use its mods and modpacks with a key. Keys are free: sign in at "
                 "console.curseforge.com, create an API key, and paste it here. It's stored only on this computer "
-                "and sent only to CurseForge.", 760).pack(anchor="w", pady=(8, 0))
+                "and sent only to CurseForge.", 580).pack(anchor="w", pady=(8, 0))
         Btn(c, "Get a free key", lambda: webbrowser.open("https://console.curseforge.com/"), "secondary", h=34,
             bg=C["card"]).pack(anchor="w", pady=(10, 0))
 
@@ -5107,11 +6039,11 @@ class App:
         root.report_callback_exception = self.tk_error
         root.title(WINDOW_TITLE)
         root.configure(bg=C["bg"])
-        w, h = 1180, 740
+        w, h = 1260, 780
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
         w, h = min(w, sw - 80), min(h, sh - 120)
         root.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 3)}")
-        root.minsize(1040, 660)
+        root.minsize(1120, 680)
         setup_style(root)
         self.q = queue.Queue()
         # Only Microsoft accounts are supported; ignore anything else left in an old file.
@@ -5150,53 +6082,89 @@ class App:
 
     def build(self):
         root = self.root
-        root.grid_columnconfigure(0, weight=1)
-        root.grid_rowconfigure(1, weight=1)
-        top = tk.Frame(root, bg=C["side"], height=60)
-        top.grid(row=0, column=0, sticky="ew")
-        top.grid_propagate(False)
-        top.grid_columnconfigure(1, weight=1)
-        top.grid_rowconfigure(0, weight=1)
-        tk.Frame(root, bg=C["line"], height=1).grid(row=0, column=0, sticky="sew")
-        main = tk.Frame(root, bg=C["bg"])
-        main.grid(row=1, column=0, sticky="nsew")
-        main.grid_columnconfigure(0, weight=1)
-        main.grid_rowconfigure(0, weight=1)
+        root.grid_columnconfigure(1, weight=1)
+        root.grid_rowconfigure(0, weight=1)
+        side = tk.Frame(root, bg=C["side"], width=236)
+        side.grid(row=0, column=0, sticky="ns")
+        side.pack_propagate(False)
+        tk.Frame(root, bg=C["line"], width=1).grid(row=0, column=0, sticky="nse")
+        right = tk.Frame(root, bg=C["bg"])
+        right.grid(row=0, column=1, sticky="nsew")
+        right.grid_columnconfigure(0, weight=1)
+        right.grid_rowconfigure(1, weight=1)
 
-        # brand
-        brand = tk.Canvas(top, width=150, height=60, bg=C["side"], highlightthickness=0, bd=0, cursor="hand2")
-        brand.grid(row=0, column=0, sticky="w", padx=(20, 0))
-        draw_logo(brand, 0, 13, 34)
-        brand.create_text(44, 30, text="Spectra", anchor="w", fill=C["text"], font=font(15, "bold"))
+        # sidebar: brand, instance list, footer
+        brand = tk.Canvas(side, width=236, height=NAVH, bg=C["side"], highlightthickness=0, bd=0, cursor="hand2")
+        brand.pack(fill="x")
+        draw_logo(brand, 20, 15, 34)
+        brand.create_text(64, NAVH / 2, text="Spectra", anchor="w", fill=C["text"], font=font(15, "bold"))
         brand.bind("<Button-1>", lambda _e: self.show_page("instances"))
+        head = tk.Frame(side, bg=C["side"])
+        head.pack(fill="x", padx=(20, 14), pady=(6, 6))
+        lbl(head, "INSTANCES", 8, "bold", C["dim"], mono=True, bg=C["side"]).pack(side="left")
+        plus = tk.Canvas(head, width=28, height=28, bg=C["side"], highlightthickness=0, bd=0, cursor="hand2")
+        plus.pack(side="right")
 
-        # navigation
-        nav = tk.Frame(top, bg=C["side"])
-        nav.grid(row=0, column=1)
-        self.nav = {}
-        for key, text, icon in (("instances", "Instances", "grid"), ("accounts", "Accounts", "user"),
-                                ("modpacks", "Modpacks", "pack"), ("skins", "Skins", "skin"), ("cursor", "Cursor", "cursor"),
-                                ("console", "Console", "term"), ("settings", "Settings", "gear"), ("about", "About", "info")):
-            n = NavItem(nav, text, icon, lambda k=key: self.show_page(k))
-            n.pack(side="left", padx=1)
-            self.nav[key] = n
+        def draw_plus(hov=False):
+            plus.delete("all")
+            plus.create_oval(1, 1, 27, 27, fill=C["nav_on"] if hov else C["card"], outline=C["accent"] if hov else C["line2"])
+            draw_icon(plus, "plus", 14, 14, 14, C["accent"] if hov else C["muted"])
+        draw_plus()
+        plus.bind("<Enter>", lambda _e: draw_plus(True))
+        plus.bind("<Leave>", lambda _e: draw_plus(False))
+        plus.bind("<Button-1>", lambda _e: self.add_instance())
+        foot = tk.Frame(side, bg=C["side"])
+        foot.pack(side="bottom", fill="x", padx=20, pady=(6, 14))
+        tk.Frame(side, bg=C["line"], height=1).pack(side="bottom", fill="x")
+        for text, fn in (("About", lambda: self.show_page("about")),
+                         ("Source code", lambda: webbrowser.open("https://github.com/mcpacks-site/Spectra-launcher"))):
+            link = lbl(foot, text, 9, color=C["muted"], bg=C["side"], cursor="hand2")
+            link.pack(anchor="w", pady=2)
+            link.bind("<Button-1>", lambda _e, f=fn: f())
+            link.bind("<Enter>", lambda _e, w=link: w.config(fg=C["text"]))
+            link.bind("<Leave>", lambda _e, w=link: w.config(fg=C["muted"]))
+        lbl(foot, f"{APP_NAME} {APP_VERSION}", 8, color=C["dim"], bg=C["side"]).pack(anchor="w", pady=(6, 0))
+        self.sidebar = InstanceList(side, self)
+        self.sidebar.pack(fill="both", expand=True)
 
-        # account chip
-        self.chip = tk.Canvas(top, width=164, height=44, bg=C["side"], highlightthickness=0, bd=0, cursor="hand2")
-        self.chip.grid(row=0, column=2, sticky="e", padx=(0, 20))
-        self.chip.bind("<Button-1>", lambda _e: self.show_page("accounts"))
-        self.chip.bind("<Enter>", lambda _e: self.draw_chip(True))
-        self.chip.bind("<Leave>", lambda _e: self.draw_chip(False))
-
-        # pages
-        holder = tk.Frame(main, bg=C["bg"])
-        holder.grid(row=0, column=0, sticky="nsew")
+        # right: sky bar, pages, status strip
+        self.topbar = TopBar(right, self)
+        self.topbar.grid(row=0, column=0, sticky="ew")
+        holder = tk.Frame(right, bg=C["bg"])
+        holder.grid(row=1, column=0, sticky="nsew")
         holder.grid_columnconfigure(0, weight=1)
         holder.grid_rowconfigure(0, weight=1)
+        strip = tk.Frame(right, bg=C["side"], height=78)
+        strip.grid(row=2, column=0, sticky="ew")
+        strip.pack_propagate(False)
+        tk.Frame(strip, bg=C["line"], height=1).pack(fill="x", side="top")
+        inner = tk.Frame(strip, bg=C["side"])
+        inner.pack(fill="both", expand=True, padx=24)
+        self.btn_launch = Btn(inner, "PLAY", self.launch, "primary", w=160, h=46, size=11, r=15, bg=C["side"], icon="play")
+        self.btn_launch.pack(side="right")
+        self.bar_icon = tk.Canvas(inner, width=48, height=48, bg=C["side"], highlightthickness=0, bd=0)
+        self.bar_icon.pack(side="left", pady=14)
+        lt = tk.Frame(inner, bg=C["side"], width=230, height=60)
+        lt.pack(side="left", padx=(12, 0), pady=9)
+        lt.pack_propagate(False)
+        self.bar_name = lbl(lt, "", 11, "bold", bg=C["side"], anchor="w")
+        self.bar_name.pack(anchor="w", pady=(8, 0), fill="x")
+        self.bar_meta = lbl(lt, "", 9, color=C["muted"], bg=C["side"], anchor="w")
+        self.bar_meta.pack(anchor="w", fill="x")
+        mid = tk.Frame(inner, bg=C["side"])
+        mid.pack(side="left", fill="x", expand=True, padx=(20, 24))
+        self.status = lbl(mid, "Ready", 9, color=C["muted"], bg=C["side"], anchor="w")
+        self.status.pack(fill="x", pady=(20, 6))
+        self.meter = Meter(mid, height=8, bg=C["side"])
+        self.meter.pack(fill="x")
+
         self.pages = {}
-        self.pages["instances"] = self.build_instances(holder)
+        self.home = HomePage(holder, self)
+        self.pages["instances"] = self.home
+        self.pages["library"] = LibraryPage(holder, self)
         self.pages["accounts"] = AccountsPage(holder, self)
         self.pages["modpacks"] = ModpacksPage(holder, self)
+        self.pages["detail"] = PackDetailPage(holder, self)
         self.pages["skins"] = SkinsPage(holder, self)
         self.pages["cursor"] = CursorPage(holder, self)
         self.pages["console"] = self.build_console(holder)
@@ -5204,45 +6172,7 @@ class App:
         self.pages["about"] = self.build_about(holder)
         for p in self.pages.values():
             p.grid(row=0, column=0, sticky="nsew")
-
-        # launch bar
-        bar = tk.Frame(main, bg=C["side"], height=88)
-        bar.grid(row=1, column=0, sticky="ew")
-        bar.pack_propagate(False)
-        tk.Frame(bar, bg=C["line"], height=1).pack(fill="x", side="top")
-        inner = tk.Frame(bar, bg=C["side"])
-        inner.pack(fill="both", expand=True, padx=32)
-        inner.grid_columnconfigure(1, weight=1)
-        inner.grid_rowconfigure(0, weight=1)
-        left = tk.Frame(inner, bg=C["side"], width=300)
-        left.grid(row=0, column=0, sticky="w")
-        self.bar_icon = tk.Canvas(left, width=54, height=54, bg=C["side"], highlightthickness=0, bd=0)
-        self.bar_icon.pack(side="left")
-        lt = tk.Frame(left, bg=C["side"])
-        lt.pack(side="left", padx=(14, 0))
-        self.bar_name = lbl(lt, "", 12, "bold", bg=C["side"])
-        self.bar_name.pack(anchor="w")
-        self.bar_meta = lbl(lt, "", 9, color=C["muted"], bg=C["side"])
-        self.bar_meta.pack(anchor="w")
-        mid = tk.Frame(inner, bg=C["side"])
-        mid.grid(row=0, column=1, sticky="ew", padx=28)
-        self.status = lbl(mid, "Ready", 9, color=C["muted"], bg=C["side"], anchor="w")
-        self.status.pack(fill="x", pady=(0, 7))
-        self.meter = Meter(mid, height=10, bg=C["side"])
-        self.meter.pack(fill="x")
-        lbl(mid, "Not an official Minecraft product. Not affiliated with Mojang or Microsoft.", 7, color=C["dim"],
-            bg=C["side"], anchor="w").pack(fill="x", pady=(6, 0))
-        self.btn_launch = Btn(inner, "PLAY", self.launch, "primary", w=190, h=54, size=12, r=16, bg=C["side"], icon="play")
-        self.btn_launch.grid(row=0, column=2, sticky="e")
         self.show_page("instances")
-
-    def build_instances(self, parent):
-        f = tk.Frame(parent, bg=C["bg"])
-        _, right, self.inst_sub = self.header(f, "Instances", "")
-        Btn(right, "New instance", self.add_instance, "primary", h=42, icon="plus").pack()
-        self.grid_view = InstanceGrid(f, self)
-        self.grid_view.pack(fill="both", expand=True)
-        return f
 
     def build_console(self, parent):
         f = tk.Frame(parent, bg=C["bg"])
@@ -5298,8 +6228,7 @@ class App:
     def show_page(self, name):
         self.page = name
         self.pages[name].tkraise()
-        for k, n in self.nav.items():
-            n._set(active=(k == name))
+        self.topbar.set_active("modpacks" if name == "detail" else name)
         if name == "console":
             self.logbox.see("end")
         if name == "cursor":
@@ -5308,6 +6237,8 @@ class App:
             self.pages["skins"].load_capes()
         if name == "modpacks":
             self.pages["modpacks"].shown()
+        if name == "library":
+            self.pages["library"].reload()
 
     # ---- appearance
     def tk_error(self, exc, val, tb):
@@ -5411,35 +6342,31 @@ class App:
         self.root.after(2600, t.destroy)
 
     def draw_chip(self, hover=False):
-        cv, a = self.chip, self.current_account()
-        cv.delete("all")
-        rrect(cv, 1, 1, 163, 43, 21, fill=C["card2"] if hover else C["card"], outline=C["line2"] if hover else C["line"])
-        if a:
-            draw_avatar(cv, 7, 7, 30, acct_key(a))
-            cv.create_text(46, 16, text=fit_text(a["username"], font(9, "bold"), 108), anchor="w",
-                           fill=C["text"], font=font(9, "bold"))
-            cv.create_text(46, 30, text="Microsoft account", anchor="w", fill=C["muted"], font=font(7))
-        else:
-            cv.create_oval(7, 7, 37, 37, fill=C["card2"], outline=C["line2"])
-            draw_icon(cv, "user", 22, 22, 14, C["muted"])
-            cv.create_text(46, 16, text="Not signed in", anchor="w", fill=C["text"], font=font(9, "bold"))
-            cv.create_text(46, 30, text="Click to sign in", anchor="w", fill=C["accent"], font=font(7))
+        if getattr(self, "topbar", None):
+            self.topbar.draw()
 
     def update_bar(self):
         inst = self.instance_by_id(self.sel_id)
+        ok = bool(inst) and not self.busy
+        self.btn_launch.set_enabled(ok)
+        self.hero_play.set_enabled(ok)
         ic = self.bar_icon
         ic.delete("all")
         if inst:
-            c1, c2 = inst_colors(inst["id"])
-            ic.create_image(1, 1, anchor="nw", image=grad_image(ic, 52, 52, c1, c2, 12))
-            ic.create_text(27, 27, text=inst["version"].split("-")[0][:7], fill="#ffffff", font=font(9, "bold"))
-            self.bar_name.config(text=fit_text(inst["name"], font(12, "bold"), 210))
-            self.bar_meta.config(text=f"Minecraft {inst['version']}  ·  {loader_label(inst)}  ·  {inst.get('ram_gb', 4):g} GB")
+            ic.create_image(0, 0, anchor="nw", image=inst_icon(ic, inst, 48, 12))
+            if not inst.get("icon"):
+                ic.create_text(24, 24, text=inst["version"].split("-")[0][:6], fill="#ffffff", font=font(8, "bold"))
+            self.bar_name.config(text=fit_text(inst["name"], font(11, "bold"), 220))
+            self.bar_meta.config(text=fit_text(f"{inst['version']}  ·  {loader_label(inst)}", font(9), 220))
         else:
-            rrect(ic, 1, 1, 53, 53, 12, fill=C["sunk"], outline=C["line2"], dash=(3, 3))
-            self.bar_name.config(text="No instance selected")
-            self.bar_meta.config(text="Create or pick one to play")
-        self.btn_launch.set_enabled(bool(inst) and not self.busy)
+            rrect(ic, 1, 1, 47, 47, 12, fill=C["sunk"], outline=C["line2"], dash=(3, 3))
+            self.bar_name.config(text="No modpack selected")
+            self.bar_meta.config(text="Create or pick one")
+        self.home.draw_hero()
+
+    def play_text(self, t):
+        for b in (self.btn_launch, self.hero_play):
+            b.configure_text(t)
 
     # ---- persistence
     def save_cfg(self):
@@ -5506,14 +6433,14 @@ class App:
                         self.phase = "prep"
                         self.meter.indeterminate(True)
                         self.status.config(text="Preparing…")
-                        self.btn_launch.configure_text("LAUNCHING")
+                        self.play_text("LAUNCHING")
                     else:
                         self.phase = None
                         self.meter.set(0)
                         self.status.config(text="Ready")
-                        self.btn_launch.configure_text("PLAY")
+                        self.play_text("PLAY")
                     self.update_bar()
-                    self.grid_view.draw()
+                    self.sidebar.draw()
                 elif kind == "status":
                     self.status.config(text=msg[1])
                     self.meter.set(msg[2])
@@ -5521,7 +6448,7 @@ class App:
                     self.phase = "run"
                     self.meter.set(1.0)
                     self.status.config(text=f"Playing {msg[1]}")
-                    self.btn_launch.configure_text("PLAYING")
+                    self.play_text("PLAYING")
                 elif kind == "error":
                     self.toast("Launch failed", "err")
                     messagebox.showerror("Error", msg[1])
@@ -5576,10 +6503,11 @@ class App:
             self.sel_id = select
         if not self.instance_by_id(self.sel_id):
             self.sel_id = self.instances[0]["id"] if self.instances else None
-        n = len(self.instances)
-        self.inst_sub.config(text=f"{n} instance{'s' if n != 1 else ''}  ·  Minecraft: Java Edition")
         self.update_bar()
-        self.grid_view.draw()
+        self.sidebar.draw()
+        self.home.build_body()
+        if "library" in self.pages:
+            self.pages["library"].reload()
 
     def select(self, iid):
         if iid != self.sel_id:
@@ -5587,7 +6515,10 @@ class App:
             self.cfg["last_instance"] = iid
             self.save_cfg()
             self.update_bar()
-            self.grid_view.draw()
+            self.sidebar.draw()
+            self.home.build_body()
+            if "library" in self.pages:
+                self.pages["library"].reload()
 
     def selected_instance(self, iid=None):
         iid = iid or self.sel_id
