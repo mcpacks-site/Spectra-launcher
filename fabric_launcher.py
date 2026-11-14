@@ -2023,7 +2023,11 @@ class SmoothScroll:
                 cv.unbind_all(seq)
 
     def wheel(self, e):
-        self.by(-e.delta * 4 if OS == "osx" else -e.delta / 120.0 * self.NOTCH)
+        if OS == "osx":
+            px = max(-300.0, min(300.0, -e.delta * 18.0))
+        else:
+            px = -e.delta / 120.0 * self.NOTCH
+        self.by(px)
 
     def limit(self):
         try:
@@ -5058,6 +5062,13 @@ class SettingsPage(tk.Frame):
         Btn(c, "Get a free key", lambda: webbrowser.open("https://console.curseforge.com/"), "secondary", h=34,
             bg=C["card"]).pack(anchor="w", pady=(10, 0))
 
+        st = Card(body, height=84)
+        st.pack(fill="x", pady=(0, 14))
+        self.v_splash = tk.BooleanVar(value=app.cfg.get("splash", True))
+        switch_row(st.body, "Play the intro animation when Spectra opens", self.v_splash,
+                   "Click or press any key to skip it.").pack(fill="x")
+        self.v_splash.trace_add("write", lambda *_: (app.cfg.__setitem__("splash", bool(self.v_splash.get())), app.save_cfg()))
+
         card2 = Card(body, height=130)
         card2.pack(fill="x")
         b2 = card2.body
@@ -5694,11 +5705,160 @@ class App:
             self.q.put(("busy", False))
 
 
+class Splash:
+    """Intro: the wordmark fades in letter by letter, a pixel-art sunset rises behind it, then the window is revealed."""
+    WORD = "SPECTRA"
+    T = {"dark": 0.25, "letters": 1.0, "hold": 1.7, "scene": 2.6, "out": 3.1, "reveal": 3.6}   # seconds
+
+    def __init__(self, root, on_done=None):
+        self.root, self.on_done, self.done = root, on_done, False
+        self.clock = time.monotonic
+        self.bgc = "#100a1f"
+        root.update_idletasks()
+        self.cv = tk.Canvas(root, bg=self.bgc, highlightthickness=0, bd=0)
+        self.cv.place(x=0, y=0, relwidth=1, relheight=1)
+        tk.Misc.lift(self.cv)
+        self.cv.focus_set()
+        self.cv.bind("<Button-1>", self.finish)
+        self.cv.bind("<Key>", self.finish)
+        self.size, self.letters, self.scene, self.sun = None, [], [], []
+        self.t0 = self.clock()
+        self.job = self.cv.after(16, self.tick)
+
+    # ---- helpers
+    @staticmethod
+    def clamp(x):
+        return 0.0 if x < 0 else 1.0 if x > 1 else x
+
+    @classmethod
+    def ease(cls, x):
+        x = cls.clamp(x)
+        return x * x * (3 - 2 * x)
+
+    def prog(self, t, a, b):
+        return self.clamp((t - a) / (b - a))
+
+    # ---- scene
+    def build(self, W, H):
+        import random
+        rnd = random.Random(7)
+        cv = self.cv
+        cv.delete("all")
+        self.size, self.letters, self.scene, self.sun = (W, H), [], [], []
+        B = max(6, int(round(W / 150)))
+        hy = int(H * 0.72) // B * B
+
+        def add(x0, y0, x1, y1, col, sun=False):
+            i = cv.create_rectangle(x0, y0, x1, y1, fill=self.bgc, outline="")
+            (self.sun if sun else self.scene).append([i, col, (x0, y0, x1, y1)])
+
+        stops = [(0.0, "#0e0820"), (0.35, "#241049"), (0.62, "#6b2b86"), (0.83, "#d04f7e"), (1.0, "#ff9b5c")]
+
+        def sky(p):
+            for (p0, c0), (p1, c1) in zip(stops, stops[1:]):
+                if p <= p1:
+                    return mix(c0, c1, (p - p0) / (p1 - p0))
+            return stops[-1][1]
+        n = 28
+        for i in range(n):
+            add(0, i * hy // n, W, (i + 1) * hy // n + 1, sky((i + 0.5) / n))
+        for _ in range(46):
+            x, y = rnd.randrange(W), rnd.randrange(int(hy * 0.5))
+            add(x, y, x + 2, y + 2, mix("#0e0820", "#cdbdff", rnd.uniform(0.4, 1)))
+        R = int(H * 0.15)
+        cx, cy = int(W * 0.76) // B * B, hy - int(R * 0.2)
+        for y in range(cy - R, hy, B):
+            dy = y + B / 2 - cy
+            if abs(dy) > R or (dy > R * 0.15 and (y // B) % 3 == 0):
+                continue
+            half = int(math.sqrt(R * R - dy * dy)) // B * B
+            if half:
+                add(cx - half, y, cx + half, y + B, mix("#fff1a6", "#ff8a4a", (y - (cy - R)) / (2.0 * R)), sun=True)
+        for k in range(6):
+            y = int(hy * (0.36 + k * 0.075)) // B * B
+            x = rnd.randrange(0, W - 24 * B) // B * B
+            add(x, y, x + rnd.randint(8, 22) * B, y + B // 2 + 2, mix(sky(y / hy), "#ffb0d0", 0.38))
+        for base, col, amp in ((0.05, "#2a1048", 3), (0.02, "#150a2a", 2)):
+            h = int(H * base) // B
+            for x in range(0, W, 4 * B):
+                h = max(1, min(int(H * 0.14) // B, h + rnd.randint(-amp, amp)))
+                add(x, hy - h * B + int(H * 0.04), x + 4 * B, H, col)
+        add(0, hy + int(H * 0.04), W, H, "#12081f")
+        for _ in range(9):
+            x = rnd.randrange(0, W) // B * B
+            h = rnd.randint(3, 6)
+            add(x, hy + int(H * 0.04) - h * B, x + B, hy + int(H * 0.04) + 1, "#0b0614")
+            add(x - B, hy + int(H * 0.04) - h * B + B, x + 2 * B, hy + int(H * 0.04) - B, "#0b0614")
+        # wordmark on top
+        f = font(54, "bold")
+        gap = 14
+        widths = [text_width(c, f) for c in self.WORD]
+        x = (W - (sum(widths) + gap * (len(widths) - 1))) / 2
+        y = int(H * 0.40)
+        for c, w in zip(self.WORD, widths):
+            self.letters.append(cv.create_text(x + w / 2, y, text=c, font=f, fill=self.bgc))
+            x += w + gap
+
+    # ---- animation
+    def tick(self):
+        if self.done:
+            return
+        try:
+            self.frame(self.clock() - self.t0)
+        except tk.TclError:
+            return
+        if self.done:
+            return
+        self.job = self.cv.after(16, self.tick)
+
+    def frame(self, t):
+        T, cv = self.T, self.cv
+        W, H = cv.winfo_width(), cv.winfo_height()
+        if W < 50 or H < 50:
+            return
+        if (W, H) != self.size:
+            self.build(W, H)
+        s_in = self.ease(self.prog(t, T["hold"], T["scene"]))
+        s_out = self.ease(self.prog(t, T["scene"], T["out"]))
+        word = 1.0 - 0.55 * s_in - 0.45 * s_out
+        for i, item in enumerate(self.letters):
+            a = self.ease(self.prog(t, T["dark"] + i * 0.07, T["dark"] + i * 0.07 + 0.32))
+            cv.itemconfigure(item, fill=mix(self.bgc, "#ffffff", a * word))
+        if s_in > 0 or getattr(self, "_scene_on", False):
+            self._scene_on = True
+            rise = int((1 - s_in) * H * 0.10)
+            for i, col, (x0, y0, x1, y1) in self.scene:
+                cv.itemconfigure(i, fill=mix(self.bgc, col, s_in))
+            for i, col, (x0, y0, x1, y1) in self.sun:
+                cv.coords(i, x0, y0 + rise, x1, y1 + rise)
+                cv.itemconfigure(i, fill=mix(self.bgc, col, s_in))
+            for item in self.letters:
+                cv.tag_raise(item)
+        r = self.ease(self.prog(t, T["out"], T["reveal"]))
+        if r > 0:
+            cv.place_configure(y=-int(H * r))
+        if t >= T["reveal"]:
+            self.finish()
+
+    def finish(self, _e=None):
+        if self.done:
+            return
+        self.done = True
+        try:
+            self.cv.destroy()
+        except tk.TclError:
+            pass
+        if self.on_done:
+            self.on_done()
+
+
 def main():
     ROOT.mkdir(parents=True, exist_ok=True)
     INSTANCES.mkdir(parents=True, exist_ok=True)
     root = tk.Tk()
-    App(root)
+    app = App(root)
+    if app.cfg.get("splash", True):
+        Splash(root)
     root.mainloop()
 
 
