@@ -7,6 +7,8 @@ Create separate instances, install mods and their dependencies with a click, and
 
 Website: https://mcpacks-site.github.io/Spectra-launcher/
 
+Discord: https://discord.gg/rWtmhRpa7s
+
 ## Features
 
 - **Instances** - keep separate installs, each with its own Minecraft version, mods, memory and Java settings
@@ -92,4 +94,4 @@ MIT. See [LICENSE](LICENSE).
 
 ## Contact
 
-support@mcpacks.site
+hilderbrandzachary@gmail.com
