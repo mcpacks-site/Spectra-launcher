@@ -6011,11 +6011,15 @@ class SettingsPage(tk.Frame):
         Btn(c, "Get a free key", lambda: webbrowser.open("https://console.curseforge.com/"), "secondary", h=34,
             bg=C["card"]).pack(anchor="w", pady=(10, 0))
 
-        st = Card(body, height=84)
+        st = Card(body, height=170)
         st.pack(fill="x", pady=(0, 14))
         self.v_splash = tk.BooleanVar(value=app.cfg.get("splash", True))
         switch_row(st.body, "Play the intro animation when Spectra opens", self.v_splash,
                    "Click or press any key to skip it.").pack(fill="x")
+        self.v_outro = tk.BooleanVar(value=app.cfg.get("outro", True))
+        switch_row(st.body, "Play an outro animation when Spectra closes", self.v_outro,
+                   "Click or press any key to skip it, or close the window again.").pack(fill="x", pady=(14, 0))
+        self.v_outro.trace_add("write", lambda *_: (app.cfg.__setitem__("outro", bool(self.v_outro.get())), app.save_cfg()))
         self.v_splash.trace_add("write", lambda *_: (app.cfg.__setitem__("splash", bool(self.v_splash.get())), app.save_cfg()))
 
         card2 = Card(body, height=130)
@@ -6071,6 +6075,7 @@ class App:
         self.sel_id = self.cfg.get("last_instance")
         self.page = "instances"
         self.cursor_tk = ""
+        self.outro = self.splash = None
         self.build()
         self.log(f"{APP_NAME} {APP_VERSION}")
         self.log("Not an official Minecraft product; not affiliated with Mojang or Microsoft.")
@@ -6079,6 +6084,11 @@ class App:
         self.refresh_instances()
         self.apply_cursor()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        if OS == "osx":      # Cmd+Q should play the outro too
+            try:
+                root.createcommand("tk::mac::Quit", self.on_close)
+            except tk.TclError:
+                pass
         self.bg(lambda: [(v["version"], v["stable"]) for v in get_json(f"{FABRIC_META}/versions/game")],
                 self.set_versions, lambda e: self.log(f"Could not load version list: {e}"))
         root.after(100, self.poll)
@@ -6134,6 +6144,7 @@ class App:
         foot.pack(side="bottom", fill="x", padx=20, pady=(6, 14))
         tk.Frame(side, bg=C["line"], height=1).pack(side="bottom", fill="x")
         for text, fn in (("About", lambda: self.show_page("about")),
+                         ("Discord", lambda: webbrowser.open("https://discord.gg/rWtmhRpa7s")),
                          ("Source code", lambda: webbrowser.open("https://github.com/mcpacks-site/Spectra-launcher"))):
             link = lbl(foot, text, 9, color=C["muted"], bg=C["side"], cursor="hand2")
             link.pack(anchor="w", pady=2)
@@ -6238,7 +6249,9 @@ class App:
         row.grid(row=4, column=0, sticky="w", pady=(20, 0))
         Btn(row, "Source on GitHub", lambda: webbrowser.open("https://github.com/mcpacks-site/Spectra-launcher"),
             "secondary", h=38, bg=C["card"]).pack(side="left")
-        Btn(row, "Open data folder", lambda: open_path(ROOT), "secondary", h=38, bg=C["card"]).pack(side="left", padx=8)
+        Btn(row, "Join our Discord", lambda: webbrowser.open("https://discord.gg/rWtmhRpa7s"), "secondary", h=38,
+            bg=C["card"]).pack(side="left", padx=8)
+        Btn(row, "Open data folder", lambda: open_path(ROOT), "secondary", h=38, bg=C["card"]).pack(side="left")
         return f
 
     # ---- navigation
@@ -6340,11 +6353,33 @@ class App:
             self.save_cfg()
 
     def on_close(self):
+        out = getattr(self, "outro", None)
+        if out is not None:            # closed again while the outro plays: skip it
+            out.finish()
+            return
         if OS == "windows" and self.cfg.get("cursor_system"):
             win_restore_cursors()
             self.cfg["cursor_system"] = False
             self.save_cfg()
-        self.root.destroy()
+        intro = getattr(self, "splash", None)
+        if intro is not None and not intro.done:
+            intro.finish()
+        if self.cfg.get("outro", True):
+            try:
+                for w in self.root.winfo_children():
+                    if isinstance(w, tk.Toplevel):
+                        w.destroy()
+                self.outro = Outro(self.root, self.quit_now)
+                return
+            except Exception:  # noqa: BLE001
+                self.outro = None
+        self.quit_now()
+
+    def quit_now(self):
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
     # ---- small UI helpers
     def toast(self, text, kind="ok"):
@@ -6800,13 +6835,61 @@ class Splash:
             self.on_done()
 
 
+class Outro(Splash):
+    """Played when the window is closed: the sunset slides down over the app, the sun sets, and the wordmark says goodbye."""
+    T = {"slide": 0.55, "set": 1.55, "word": 0.85, "tag": 1.35, "fade": 2.35, "end": 2.85}   # seconds
+
+    def __init__(self, root, on_done=None):
+        super().__init__(root, on_done)
+        self.tag = None
+        try:
+            self.cv.place_configure(y=-max(root.winfo_height(), 200))
+        except tk.TclError:
+            pass
+
+    def build(self, W, H):
+        super().build(W, H)
+        f = font(15, "bold")
+        self.tag = self.cv.create_text(W / 2, int(H * 0.40) + 62, text="See you next time", font=f, fill=self.bgc)
+        self._scene_on = True
+
+    def frame(self, t):
+        T, cv = self.T, self.cv
+        W, H = cv.winfo_width(), cv.winfo_height()
+        if W < 50 or H < 50:
+            return
+        if (W, H) != self.size:
+            self.build(W, H)
+        slide = self.ease(self.prog(t, 0.0, T["slide"]))
+        cv.place_configure(y=-int(H * (1.0 - slide)))
+        sett = self.ease(self.prog(t, T["slide"], T["set"]))
+        fade = self.ease(self.prog(t, T["fade"], T["end"]))
+        k = (1.0 - 0.55 * sett) * (1.0 - fade)
+        for i, col, _box in self.scene:
+            cv.itemconfigure(i, fill=mix(self.bgc, col, k))
+        sink = int(sett * H * 0.22)
+        for i, col, (x0, y0, x1, y1) in self.sun:
+            cv.coords(i, x0, y0 + sink, x1, y1 + sink)
+            cv.itemconfigure(i, fill=mix(self.bgc, col, (1.0 - 0.5 * sett) * (1.0 - fade)))
+        wa = self.ease(self.prog(t, T["word"], T["word"] + 0.5)) * (1.0 - fade)
+        for item in self.letters:
+            cv.itemconfigure(item, fill=mix(self.bgc, "#ffffff", wa))
+        ta = self.ease(self.prog(t, T["tag"], T["tag"] + 0.5)) * (1.0 - fade)
+        cv.itemconfigure(self.tag, fill=mix(self.bgc, "#ffd9a8", ta))
+        for item in self.letters:
+            cv.tag_raise(item)
+        cv.tag_raise(self.tag)
+        if t >= T["end"]:
+            self.finish()
+
+
 def main():
     ROOT.mkdir(parents=True, exist_ok=True)
     INSTANCES.mkdir(parents=True, exist_ok=True)
     root = tk.Tk()
     app = App(root)
     if app.cfg.get("splash", True):
-        Splash(root)
+        app.splash = Splash(root)
     root.mainloop()
 
 
