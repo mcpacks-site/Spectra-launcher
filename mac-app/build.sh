@@ -31,8 +31,15 @@ fetch_python() {   # $1 = aarch64 | x86_64
   if [ ! -f "$out" ]; then
     echo "Finding Python for $1…"
     local tag base name
-    tag=$(curl -fsSL https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest \
+    # Ask the API (with a token when we have one: anonymous calls get rate-limited on CI runners),
+    # and fall back to the "latest release" redirect.
+    local auth=()
+    [ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
+    tag=$(curl -fsSL "${auth[@]}" https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest \
       | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/' || true)
+    if [ -z "$tag" ]; then
+      tag=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/astral-sh/python-build-standalone/releases/latest | sed 's|.*/tag/||' || true)
+    fi
     [ -n "$tag" ] || { echo "Couldn't reach GitHub to find the latest Python release."; exit 1; }
     base="https://github.com/astral-sh/python-build-standalone/releases/download/$tag"
     # the release has hundreds of files, so read its checksum list instead of the (truncated) API asset list
