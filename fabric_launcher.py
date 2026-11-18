@@ -32,6 +32,7 @@ import shutil
 import ssl
 import subprocess
 import tarfile
+import sys
 import threading
 import time
 import urllib.error
@@ -42,8 +43,24 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import tkinter as tk
-from tkinter import messagebox, ttk
+try:
+    import tkinter as tk
+    from tkinter import messagebox, ttk
+except ImportError:      # Tk is not installed: the command-line mode (--cli) still works without it
+    import types as _types
+
+    class _NoTk:
+        def __init__(self, *a, **k):
+            raise RuntimeError("Tk is not available on this system.")
+
+    class _TclError(Exception):
+        pass
+
+    def _tk_stub(name):
+        m = _types.ModuleType(name)
+        m.__getattr__ = lambda attr: _TclError if attr == "TclError" else type(attr, (_NoTk,), {})
+        return m
+    tk, messagebox, ttk = _tk_stub("tkinter"), _tk_stub("messagebox"), _tk_stub("ttk")
 
 # --------------------------------------------------------------------------
 # Constants / paths
@@ -1503,8 +1520,11 @@ class Core:
 import atexit
 import colorsys
 import math
-import tkinter.font as tkfont
-from tkinter import filedialog, simpledialog
+try:
+    import tkinter.font as tkfont
+    from tkinter import filedialog, simpledialog
+except ImportError:
+    tkfont, filedialog, simpledialog = _tk_stub("tkfont"), _tk_stub("filedialog"), _tk_stub("simpledialog")
 
 C = {
     "bg": "#0b100d", "side": "#080c09", "panel": "#101611", "card": "#151d17", "card2": "#1b261f",
@@ -1639,6 +1659,21 @@ def grad_image(master, w, h, c1, c2, radius=0, corners="all", vertical=False, ca
     if cache:
         _IMGS[key] = img
     return img
+
+
+def spec(cv, x1, y1, x2, y2, r, base, tags=None, k=0.5):
+    """Glass edge light: a bright specular line along the top edge and a soft shade along the bottom."""
+    cv.create_line(x1 + r * 0.85, y1 + 1.5, x2 - r * 0.85, y1 + 1.5, fill=mix(base, "#ffffff", k), tags=tags)
+    cv.create_line(x1 + r * 0.85, y2 - 1.5, x2 - r * 0.85, y2 - 1.5, fill=mix(base, "#000000", 0.22), tags=tags)
+
+
+def glass_panel(cv, x1, y1, x2, y2, r, base, lift=0.16, tags=None):
+    """A frosted-glass look: gradient body (lighter at the top), bright rim, specular top edge."""
+    w, h = max(2, int(x2 - x1)), max(2, int(y2 - y1))
+    top, bot = mix(base, "#ffffff", lift), mix(base, "#ffffff", lift * 0.22)
+    cv.create_image(x1, y1, anchor="nw", image=grad_image(cv, w, h, top, bot, r, vertical=True), tags=tags)
+    rrect(cv, x1 + 0.5, y1 + 0.5, x2 - 0.5, y2 - 0.5, r, fill="", outline=mix(base, "#ffffff", 0.36), tags=tags)
+    spec(cv, x1, y1, x2, y2, r, top, tags, 0.6)
 
 
 def _bg_of(w):
@@ -1859,6 +1894,8 @@ class Btn(tk.Canvas):
             else:
                 c1, c2 = mix(c1, "#ffffff", lift), mix(c2, "#ffffff", lift)
             self.create_image(0, off, anchor="nw", image=grad_image(self, w, h - 1, c1, c2, r))
+            if self.enabled:
+                spec(self, 0, off, w, h + off, r, mix(c1, "#ffffff", 0.2), None, 0.55)
         else:
             fill, bd = st["fill"], st["bd"]
             if self.style == "ghost":
@@ -1868,7 +1905,12 @@ class Btn(tk.Canvas):
                 fill, bd = mix(fill, "#ffffff", 0.07), mix(bd, "#ffffff", 0.15)
             if not self.enabled:
                 fg = C["dim"]
-            if fill:
+            if fill and self.style == "secondary":
+                top = mix(fill, "#ffffff", 0.10 if not self.hover else 0.16)
+                self.create_image(1, 1 + off, anchor="nw", image=grad_image(self, w - 2, h - 2, top, fill, r, vertical=True))
+                rrect(self, 0.5, 0.5 + off, w - 0.5, h - 0.5 + off, r, fill="", outline=mix(bd, "#ffffff", 0.18))
+                spec(self, 0, off, w, h + off, r, top, None, 0.45)
+            elif fill:
                 rrect(self, 1, 1 + off, w - 1, h - 1 + off, r, fill=fill, outline=bd or fill)
         cx = w / 2 + (10 if self.icon else 0)
         self.create_text(cx, h / 2 + off, text=self.text, fill=fg, font=self.fnt)
@@ -2002,6 +2044,7 @@ class Card(tk.Canvas):
     def _redraw(self, e):
         self.delete("bg")
         rrect(self, 1, 1, e.width - 2, e.height - 2, self.radius, fill=self.fill, outline=self.outline, tags="bg")
+        spec(self, 1, 1, e.width - 2, e.height - 2, self.radius, mix(self.fill, "#ffffff", 0.14), "bg", 0.7)
         self.tag_lower("bg")
         self.itemconfigure(self._win, width=max(1, e.width - 2 * self.pad), height=max(1, e.height - 2 * self.pad))
 
@@ -2748,15 +2791,15 @@ class TopBar(tk.Canvas):
         f = font(10, "bold")
         widths = [text_width(t, f) + 30 for _k, t in self.ITEMS]
         x0, y0, y1 = 24, 12, NAVH - 12
-        rrect(cv, x0, y0, x0 + sum(widths) + 8, y1, 20, fill=base, outline=mix(base, "#ffffff", 0.14))
+        glass_panel(cv, x0, y0, x0 + sum(widths) + 8, y1, 20, base, 0.13)
         x = x0 + 4
         for (key, text), wd in zip(self.ITEMS, widths):
             tag = "nav_" + key
             act, hov = key == self.active, key == self.hover
             if act:
-                rrect(cv, x, y0 + 4, x + wd, y1 - 4, 16, fill=mix(base, C["accent"], 0.45), outline="", tags=tag)
+                glass_panel(cv, x, y0 + 4, x + wd, y1 - 4, 16, mix(base, C["accent"], 0.5), 0.14, tag)
             elif hov:
-                rrect(cv, x, y0 + 4, x + wd, y1 - 4, 16, fill=mix(base, "#ffffff", 0.12), outline="", tags=tag)
+                glass_panel(cv, x, y0 + 4, x + wd, y1 - 4, 16, mix(base, "#ffffff", 0.06), 0.10, tag)
             cv.create_text(x + wd / 2, NAVH / 2, text=text, fill="#ffffff" if (act or hov) else "#c9c2e0", font=f, tags=tag)
             cv.tag_bind(tag, "<Button-1>", lambda _e, k=key: self.app.show_page(k))
             cv.tag_bind(tag, "<Enter>", lambda _e, k=key: (self.config(cursor="hand2"), self._hover(k)))
@@ -2767,8 +2810,7 @@ class TopBar(tk.Canvas):
         cw = 176
         cx0 = w - 24 - cw
         hov = self.hover == "chip"
-        rrect(cv, cx0, 10, cx0 + cw, NAVH - 10, 22, fill=mix(base, "#ffffff", 0.10) if hov else base,
-              outline=mix(base, "#ffffff", 0.2 if hov else 0.14), tags="chip")
+        glass_panel(cv, cx0, 10, cx0 + cw, NAVH - 10, 22, base, 0.20 if hov else 0.13, "chip")
         if a:
             draw_avatar(cv, cx0 + 8, 16, 32, acct_key(a), tag="chip")
             cv.create_text(cx0 + 50, 26, text=fit_text(a["username"], font(9, "bold"), cw - 62), anchor="w",
@@ -2824,6 +2866,7 @@ class InstanceList(tk.Canvas):
             sel, hov = iid == self.app.sel_id, self.hover == iid
             if sel:
                 rrect(cv, 8, y, w - 8, y + self.RH, 14, fill=C["nav_on"], outline=C["nav_on_bd"])
+                spec(cv, 8, y, w - 8, y + self.RH, 14, mix(C["nav_on"], "#ffffff", 0.18), None, 0.7)
             elif hov:
                 rrect(cv, 8, y, w - 8, y + self.RH, 14, fill=C["nav_hover"], outline=C["nav_hover"])
             cv.create_image(18, y + 9, anchor="nw", image=inst_icon(cv, inst, 40, 10))
@@ -2906,7 +2949,7 @@ class HomePage(tk.Frame):
 
         def chip(x, text):
             fw = text_width(text, font(8, "bold")) + 22
-            rrect(cv, x, 24, x + fw, 48, 12, fill=shade, outline=mix(shade, "#ffffff", 0.14))
+            glass_panel(cv, x, 24, x + fw, 48, 12, shade, 0.14)
             cv.create_text(x + fw / 2, 36, text=text, fill="#e9e4ff", font=font(8, "bold"))
             return x + fw + 8
 
@@ -2933,7 +2976,7 @@ class HomePage(tk.Frame):
             cv.create_window(40, 172, anchor="nw", window=self.app.hero_play)
             vb = self.ver_box
             vb.delete("all")
-            rrect(vb, 1, 1, 209, 51, 16, fill=shade, outline=mix(shade, "#ffffff", 0.2))
+            glass_panel(vb, 0, 0, 210, 52, 16, shade, 0.16)
             vb.create_text(18, 17, text="VERSION", anchor="w", fill="#c9c2e0", font=font(7, "bold"))
             vb.create_text(18, 35, text=fit_text(f"{inst['version']}  ·  {loader_label(inst)}", font(10, "bold"), 176),
                            anchor="w", fill="#ffffff", font=font(10, "bold"))
@@ -5540,6 +5583,7 @@ class LibraryPage(tk.Frame):
         rrect(cv, x + 2, y + 5, x + w + 2, y + h + 5, 18, fill=C["shadow"], outline="")
         rrect(cv, x, y, x + w, y + h, 18, fill=C["card2"] if hov else C["card"],
               outline=C["accent"] if sel else (C["line2"] if hov else C["line"]), width=2 if sel else 1)
+        spec(cv, x, y, x + w, y + h, 18, mix(C["card"], "#ffffff", 0.14), None, 0.75)
         meta = f"{inst['version']}  ·  {loader_label(inst)}  ·  {len(inst.get('mods', {}))} mods"
         played = f"Played {fmt_playtime(inst['playtime_s'])}" if inst.get("playtime_s") else "Not played yet"
         if self.view == "list":
@@ -5702,6 +5746,7 @@ class ModpacksPage(tk.Frame):
     def draw_card(self, cv, it, x, y, w, h, hov):
         rrect(cv, x + 2, y + 5, x + w + 2, y + h + 5, 18, fill=C["shadow"], outline="")
         rrect(cv, x, y, x + w, y + h, 18, fill=C["card2"] if hov else C["card"], outline=C["line2"] if hov else C["line"])
+        spec(cv, x, y, x + w, y + h, 18, mix(C["card"], "#ffffff", 0.14), None, 0.75)
         img = self.icons.get(it.get("icon"))
         if img:
             cv.create_image(x + 16, y + 16, anchor="nw", image=img)
@@ -6883,7 +6928,665 @@ class Outro(Splash):
             self.finish()
 
 
+# --------------------------------------------------------------------------
+# Command-line mode: `fabric_launcher.py --cli <command>` prints one JSON object per line.
+# The native macOS app uses this to do the real work (sign-in, installs, launching).
+# --------------------------------------------------------------------------
+_CLI_LOCK = threading.Lock()
+
+
+def cli_emit(**kw):
+    with _CLI_LOCK:
+        sys.stdout.write(json.dumps(kw) + "\n")
+        sys.stdout.flush()
+
+
+def cli_log(text):
+    cli_emit(type="log", text=str(text))
+
+
+def cli_progress(done, total, label):
+    cli_emit(type="progress", done=int(done), total=int(total), label=str(label))
+
+
+def cli_instance_dict(i):
+    icon = custom_icon_path(i)
+    return {"id": i["id"], "name": i["name"], "version": i["version"], "loader": loader_of(i),
+            "loader_label": loader_label(i), "ram_gb": i.get("ram_gb", 4), "mods": len(i.get("mods", {})),
+            "playtime_s": int(i.get("playtime_s", 0)), "last_played": int(i.get("last_played", 0)),
+            "icon_path": str(icon) if icon else None, "perf": bool(i.get("perf_flags")), "hue": i.get("hue"),
+            "java": i.get("java", ""), "jvm_args": i.get("jvm_args", "")}
+
+
+def cli_accounts():
+    return [a for a in load_json(ACCOUNTS, {}).get("accounts", []) if a.get("type") == "msa"]
+
+
+def cli_public_account(a):
+    return {"key": acct_key(a), "username": a["username"], "uuid": a.get("uuid", "")}
+
+
+def cli_state():
+    cfg = load_json(CONFIG, {})
+    accts = cli_accounts()
+    cli_emit(type="state", app=APP_NAME, version=APP_VERSION, root=str(ROOT),
+             instances=[cli_instance_dict(i) for i in list_instances()],
+             accounts=[cli_public_account(a) for a in accts], account=cfg.get("account"),
+             curseforge_key=bool(cfg.get("curseforge_key")), accent=cfg.get("accent", "green"),
+             theme=cfg.get("theme", "dark"), splash=bool(cfg.get("splash", True)), outro=bool(cfg.get("outro", True)), glass=bool(cfg.get("liquid_glass", True)))
+
+
+def cli_save_account(acct, make_current=True):
+    accts = [a for a in cli_accounts() if acct_key(a) != acct_key(acct)] + [acct]
+    save_json(ACCOUNTS, {"accounts": accts}, private=True)
+    if make_current:
+        cfg = load_json(CONFIG, {})
+        cfg["account"] = acct_key(acct)
+        save_json(CONFIG, cfg, private=True)
+
+
+def cli_login():
+    auth = MSAuth()
+    dc = auth.start_device()
+    cli_emit(type="device", user_code=dc.get("user_code", ""), uri=dc.get("verification_uri", ""),
+             message=dc.get("message", ""), expires_in=int(dc.get("expires_in", 900)))
+    cancel = threading.Event()
+
+    def watch():          # the app closes our stdin (or sends "cancel") to abort
+        try:
+            while True:
+                line = sys.stdin.readline()
+                if not line or line.strip() == "cancel":
+                    cancel.set()
+                    return
+        except Exception:  # noqa: BLE001
+            cancel.set()
+    threading.Thread(target=watch, daemon=True).start()
+    acct = auth.minecraft_account(auth.poll_device(dc, cancel))
+    cli_save_account(acct)
+    cli_emit(type="account", account=cli_public_account(acct))
+
+
+def cli_pick_account(key=None):
+    accts = cli_accounts()
+    key = key or load_json(CONFIG, {}).get("account")
+    for a in accts:
+        if acct_key(a) == key:
+            return a
+    if accts:
+        return accts[0]
+    raise IOError("Sign in with your Microsoft account first.")
+
+
+def cli_launch(iid, account_key=None):
+    inst = load_json(INSTANCES / iid / "instance.json", None)
+    if not inst:
+        raise IOError("That instance no longer exists.")
+    acct = cli_pick_account(account_key)
+    if time.time() >= acct.get("expires_at", 0) - 300:
+        auth = MSAuth()
+        acct = auth.minecraft_account(auth.refresh(acct["refresh_token"]))
+        cli_save_account(acct, make_current=False)
+    cli_emit(type="phase", phase="preparing")
+    cmd, game_dir = Core(cli_log, cli_progress).prepare(inst, acct)
+    try:
+        sync_cursor_mod(inst, load_json(CONFIG, {}).get("cursor_scope") == "minecraft", cli_log)
+    except Exception as e:  # noqa: BLE001
+        cli_log(f"WARNING: could not update the cursor mod: {e}")
+    save_instance(inst)
+    cli_log(f"Launching as {acct['username']}...")
+    proc = subprocess.Popen(cmd, cwd=str(game_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, errors="replace", creationflags=NOWIN)
+    cli_emit(type="running", name=inst["name"])
+    try:
+        import signal
+        signal.signal(signal.SIGTERM, lambda *_: proc.terminate())   # the app's Stop button
+    except (ValueError, OSError, AttributeError):
+        pass
+    t0 = time.time()
+    for line in proc.stdout:
+        cli_emit(type="game", line=line.rstrip())
+    code = proc.wait()
+    fresh = load_json(INSTANCES / iid / "instance.json", None) or inst
+    fresh["playtime_s"] = int(fresh.get("playtime_s", 0)) + int(time.time() - t0)
+    fresh["last_played"] = int(time.time())
+    save_instance(fresh)
+    cli_emit(type="exit", code=code)
+
+
+def cli_create(name, version, loader, boost):
+    if loader not in LOADERS:
+        raise IOError(f"Unknown loader: {loader}")
+    inst = {"id": new_instance_id(name), "name": name, "version": version, "loader": loader, "ram_gb": 4,
+            "java": "", "jvm_args": "", "auto_fabric_api": loader == "fabric", "mods": {}}
+    boost = boost and loader in PERF_MODS
+    if boost:
+        inst["perf_flags"] = True
+    save_instance(inst)
+    game_dir_of(inst).mkdir(parents=True, exist_ok=True)
+    if boost:
+        cli_log("Adding performance mods…")
+        install_perf_mods(inst, cli_log)
+    cli_emit(type="instance", instance=cli_instance_dict(load_json(INSTANCES / inst["id"] / "instance.json", inst)))
+
+
+def cli_search(source, query, limit):
+    if source == "curseforge":
+        key = load_json(CONFIG, {}).get("curseforge_key") or os.environ.get("SPECTRA_CURSEFORGE_KEY", "")
+        if not key:
+            raise IOError("CurseForge needs an API key. Run: set-key <key>")
+        set_cf_key(key)
+        hits = cf_search("modpack", query, limit=limit)
+        for h in hits:
+            h["source"] = "curseforge"
+    else:
+        data = get_json(f"{MODRINTH}/search?" + urllib.parse.urlencode(
+            {"query": query, "facets": json.dumps([["project_type:modpack"]]), "limit": limit,
+             "index": "relevance" if query else "downloads"}))
+        hits = [ModpacksPage.norm_mr(h) for h in data.get("hits", [])]
+    cli_emit(type="packs", source=source, packs=hits)
+
+
+
+def cli_inst(iid):
+    inst = load_json(INSTANCES / iid / "instance.json", None)
+    if not inst:
+        raise IOError("That instance no longer exists.")
+    return inst
+
+
+def cli_fresh_account(key=None):
+    acct = cli_pick_account(key)
+    if time.time() >= acct.get("expires_at", 0) - 300:
+        auth = MSAuth()
+        acct = auth.minecraft_account(auth.refresh(acct["refresh_token"]))
+        cli_save_account(acct, make_current=False)
+    return acct
+
+
+def cli_content_dir(inst, kind, world=None):
+    if kind == "datapack":
+        if not world:
+            raise IOError("Pick a world first.")
+        return game_dir_of(inst) / "saves" / Path(world).name / "datapacks"
+    if kind not in ("mods", "resourcepack", "shader"):
+        raise IOError("Unknown content type.")
+    return game_dir_of(inst) / CONTENT_TABS[kind]["folder"]
+
+
+def cli_tracked(inst, kind, world=None):
+    if kind == "mods":
+        return inst.setdefault("mods", {})
+    key = kind if kind != "datapack" else f"datapack:{world}"
+    return inst.setdefault("content", {}).setdefault(key, {})
+
+
+def cli_content_list(iid, kind, world=None):
+    inst = cli_inst(iid)
+    d = cli_content_dir(inst, kind, world)
+    items = []
+    if d.is_dir():
+        for p in sorted(d.iterdir()):
+            nm = p.name
+            if nm.endswith(".disabled"):
+                items.append({"file": nm, "name": nm[:-9], "enabled": False})
+            elif p.is_dir() or nm.endswith(CONTENT_TABS[kind]["exts"]):
+                items.append({"file": nm, "name": nm, "enabled": True})
+    cli_emit(type="content", kind=kind, items=items)
+
+
+def cli_content_toggle(iid, kind, fname, world=None):
+    d = cli_content_dir(cli_inst(iid), kind, world)
+    p = d / Path(fname).name
+    if not p.exists():
+        raise IOError("That file is gone.")
+    p.rename(p.with_name(p.name[:-9] if p.name.endswith(".disabled") else p.name + ".disabled"))
+
+
+def cli_content_remove(iid, kind, fname, world=None):
+    inst = cli_inst(iid)
+    d = cli_content_dir(inst, kind, world)
+    p = d / Path(fname).name
+    if p.is_dir():
+        shutil.rmtree(p, ignore_errors=True)
+    else:
+        p.unlink(missing_ok=True)
+    tracked = cli_tracked(inst, kind, world)
+    for k in [k for k, v in tracked.items() if not ((d / v).exists() or (d / (v + ".disabled")).exists())]:
+        tracked.pop(k)
+    save_instance(inst)
+
+
+def cli_content_search(iid, kind, query, source):
+    inst = cli_inst(iid)
+    if source == "curseforge":
+        key = load_json(CONFIG, {}).get("curseforge_key", "")
+        if not key:
+            raise IOError("CurseForge needs an API key. Add it in Settings.")
+        set_cf_key(key)
+        hits = cf_search(kind, query, inst["version"], loader_of(inst))
+        for h in hits:
+            h["source"] = "curseforge"
+    else:
+        v = [f"versions:{inst['version']}"]
+        if kind == "mods":
+            facets = [["project_type:mod"], [f"categories:{l}" for l in modrinth_loaders(loader_of(inst))], v]
+        elif kind == "datapack":
+            facets = [["project_type:mod"], ["categories:datapack"], v]
+        else:
+            facets = [[f"project_type:{kind}"], v]
+        data = get_json(f"{MODRINTH}/search?" + urllib.parse.urlencode(
+            {"query": query, "facets": json.dumps(facets), "limit": 30}))
+        hits = [{"id": h["project_id"], "source": "modrinth", "title": h["title"], "author": h.get("author", ""),
+                 "description": h.get("description", ""), "downloads": h.get("downloads", 0),
+                 "icon": h.get("icon_url") or "", "blocked": False,
+                 "url": f"https://modrinth.com/{kind if kind != 'mods' else 'mod'}/{h.get('slug', h['project_id'])}"}
+                for h in data.get("hits", [])]
+    cli_emit(type="packs", source=source, packs=hits)
+
+
+def cli_content_install(iid, kind, project, source, world=None):
+    inst = cli_inst(iid)
+    dest = cli_content_dir(inst, kind, world)
+    dest.mkdir(parents=True, exist_ok=True)
+    mc, loader, cf = inst["version"], loader_of(inst), source == "curseforge"
+    if cf:
+        set_cf_key(load_json(CONFIG, {}).get("curseforge_key", ""))
+    tracked = cli_tracked(inst, kind, world)
+    if kind == "mods" and cf:
+        cf_install_mod(mc, project, dest, tracked, cli_log, set(), loader)
+    elif kind == "mods":
+        install_project(mc, project, dest, tracked, cli_log, set(), loader)
+    else:
+        fn = (cf_install_content if cf else install_content)(mc, project, dest, cli_log)
+        if fn:
+            tracked[f"cf:{project}" if cf else project] = fn
+    save_instance(inst)
+    cli_emit(type="instance", instance=cli_instance_dict(load_json(INSTANCES / iid / "instance.json", inst)))
+
+
+def cli_file_size(p):
+    try:
+        if p.is_dir():
+            return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+        return p.stat().st_size
+    except OSError:
+        return 0
+
+
+def cli_worlds(iid):
+    inst = cli_inst(iid)
+    saves = game_dir_of(inst) / "saves"
+    worlds = []
+    for name in list_worlds(inst):
+        p = saves / name
+        worlds.append({"name": name, "size": cli_file_size(p), "played": int((p / "level.dat").stat().st_mtime)})
+    backups = [{"name": b.name, "size": b.stat().st_size, "created": int(b.stat().st_mtime)} for b in list_backups(inst)]
+    cli_emit(type="worlds", worlds=worlds, backups=backups)
+
+
+def cli_skin_cache():
+    d = ROOT / "cache" / "skins"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def cli_skin(key):
+    acct = cli_fresh_account(key)
+    png, slim = account_skin(acct["access_token"])
+    path = cli_skin_cache() / f"{acct['uuid']}-skin.png"
+    path.write_bytes(png)
+    status, prof = http_json(SKIN_API, headers={"Authorization": f"Bearer {acct['access_token']}"})
+    capes = []
+    for c in (prof.get("capes", []) if status == 200 else []):
+        try:
+            cp = cli_skin_cache() / f"{c['id']}.png"
+            cp.write_bytes(http_get(c["url"].replace("http://", "https://")))
+            capes.append({"id": c["id"], "alias": c.get("alias") or "Cape", "active": c.get("state") == "ACTIVE",
+                          "path": str(cp)})
+        except Exception:  # noqa: BLE001
+            continue
+    cli_emit(type="skin", username=acct["username"], path=str(path), slim=bool(slim), capes=capes)
+
+
+def cli_skin_lib():
+    return [{"id": e["id"], "name": e.get("name", e["id"]), "slim": bool(e.get("slim")),
+             "path": str(SKINS_DIR / f"{e['id']}.png")} for e in lib_load() if (SKINS_DIR / f"{e['id']}.png").exists()]
+
+
+def cli_skin_save(name, slim, png_path, sid):
+    px = skin_from_png(Path(png_path).read_bytes())
+    entry = next((e for e in lib_load() if e["id"] == sid), None) if sid else None
+    lib_add(name.strip() or "My skin", slim, px, entry)
+    cli_emit(type="library", skins=cli_skin_lib())
+
+
+def cli_mod_updates(iid):
+    inst = cli_inst(iid)
+    mc, loader = inst["version"], loader_of(inst)
+    tracked = {p: f for p, f in inst.get("mods", {}).items() if not str(p).startswith("cf:")}
+    out = []
+    ids = list(tracked)
+    titles = {}
+    if ids:
+        try:
+            for pr in get_json(f"{MODRINTH}/projects?ids={urllib.parse.quote(json.dumps(ids))}"):
+                titles[pr["id"]] = pr.get("title", pr["id"])
+        except Exception:  # noqa: BLE001
+            pass
+    q = urllib.parse.urlencode({"game_versions": json.dumps([mc]), "loaders": json.dumps(modrinth_loaders(loader))})
+    for pid, cur in tracked.items():
+        try:
+            versions = get_json(f"{MODRINTH}/project/{pid}/version?{q}")
+        except Exception:  # noqa: BLE001
+            continue
+        if not versions:
+            continue
+        pick = pick_version(versions)
+        f = next((x for x in pick["files"] if x.get("primary")), pick["files"][0])
+        if f["filename"] != cur:
+            out.append({"id": pid, "title": titles.get(pid, pid), "current": cur, "latest": f["filename"]})
+    cli_emit(type="mod_updates", updates=out, checked=len(tracked))
+
+
+def cli_mod_update(iid, only):
+    inst = cli_inst(iid)
+    mods_dir = game_dir_of(inst) / "mods"
+    tracked = inst.setdefault("mods", {})
+    seen = set()
+    for pid in (only or [p for p in list(tracked) if not str(p).startswith("cf:")]):
+        install_project(inst["version"], pid, mods_dir, tracked, cli_log, seen, loader_of(inst))
+    save_instance(inst)
+    cli_emit(type="instance", instance=cli_instance_dict(load_json(INSTANCES / iid / "instance.json", inst)))
+
+
+def cli_cursors():
+    cfg = load_json(CONFIG, {})
+    styles = []
+    for sid, label in (("default", "System default"), ("spectra", "Spectra"), ("classic", "Classic"),
+                       ("crosshair", "Crosshair"), ("plus", "Plus"), ("ring", "Ring"), ("target", "Target")):
+        grid, hot = cursor_art(sid)
+        styles.append({"id": sid, "label": label, "hotspot": list(hot), "grid": grid})
+    scope = cfg.get("cursor_scope", "launcher")
+    cli_emit(type="cursors", styles=styles, style=cfg.get("cursor_style", "default"),
+             scope=scope if scope in ("launcher", "minecraft") else "launcher")
+
+
+def cli_main(argv):
+    import argparse
+    ap = argparse.ArgumentParser(prog="fabric_launcher.py --cli")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("state")
+    sub.add_parser("login")
+    p = sub.add_parser("launch")
+    p.add_argument("id")
+    p.add_argument("--account")
+    p = sub.add_parser("create")
+    p.add_argument("--name", required=True)
+    p.add_argument("--version", required=True)
+    p.add_argument("--loader", default="fabric")
+    p.add_argument("--boost", action="store_true")
+    p = sub.add_parser("delete")
+    p.add_argument("id")
+    p = sub.add_parser("boost")
+    p.add_argument("id")
+    p = sub.add_parser("versions")
+    p.add_argument("--loader", default="fabric")
+    p = sub.add_parser("search")
+    p.add_argument("--source", default="modrinth", choices=("modrinth", "curseforge"))
+    p.add_argument("--query", default="")
+    p.add_argument("--limit", type=int, default=30)
+    p = sub.add_parser("install-pack")
+    p.add_argument("--source", default="modrinth", choices=("modrinth", "curseforge"))
+    p.add_argument("id")
+    p = sub.add_parser("signout")
+    p.add_argument("key")
+    p = sub.add_parser("update")
+    p.add_argument("id")
+    p.add_argument("--name")
+    p.add_argument("--ram", type=int)
+    p.add_argument("--icon")
+    p.add_argument("--java")
+    p.add_argument("--jvm")
+    p = sub.add_parser("mods-check")
+    p.add_argument("id")
+    p = sub.add_parser("mods-update")
+    p.add_argument("id")
+    p.add_argument("--project", action="append")
+    p = sub.add_parser("duplicate")
+    p.add_argument("id")
+    p.add_argument("--name", required=True)
+    p = sub.add_parser("import")
+    p.add_argument("path")
+    p = sub.add_parser("export")
+    p.add_argument("id")
+    p.add_argument("--out", required=True)
+    for name in ("content-list", "content-toggle", "content-remove", "content-search", "content-install"):
+        p = sub.add_parser(name)
+        p.add_argument("id")
+        p.add_argument("--world")
+        p.add_argument("--kind", default="mods", choices=("mods", "resourcepack", "shader", "datapack"))
+        p.add_argument("--file")
+        p.add_argument("--query", default="")
+        p.add_argument("--project")
+        p.add_argument("--source", default="modrinth", choices=("modrinth", "curseforge"))
+    for name in ("worlds", "world-backup", "world-restore", "world-delete"):
+        p = sub.add_parser(name)
+        p.add_argument("id")
+        p.add_argument("--world")
+        p.add_argument("--backup")
+    p = sub.add_parser("skin")
+    p.add_argument("--account")
+    p = sub.add_parser("skin-upload")
+    p.add_argument("png")
+    p.add_argument("--variant", default="classic", choices=("classic", "slim"))
+    p.add_argument("--account")
+    sub.add_parser("skin-library")
+    sub.add_parser("skin-template")
+    p = sub.add_parser("skin-save")
+    p.add_argument("png")
+    p.add_argument("--name", default="My skin")
+    p.add_argument("--slim", action="store_true")
+    p.add_argument("--id")
+    p = sub.add_parser("skin-delete")
+    p.add_argument("id")
+    p = sub.add_parser("skin-import")
+    p.add_argument("--account")
+    p = sub.add_parser("cape-set")
+    p.add_argument("--cape", default="none")
+    p.add_argument("--account")
+    sub.add_parser("cursors")
+    p = sub.add_parser("cursor-set")
+    p.add_argument("--style")
+    p.add_argument("--scope", choices=("launcher", "minecraft"))
+    p = sub.add_parser("pref-set")
+    p.add_argument("--accent", choices=sorted(ACCENTS))
+    p.add_argument("--theme", choices=("dark", "light"))
+    p.add_argument("--splash", choices=("on", "off"))
+    p.add_argument("--outro", choices=("on", "off"))
+    p.add_argument("--glass", choices=("on", "off"))
+    p = sub.add_parser("set-key")
+    p.add_argument("key")
+    a = ap.parse_args(argv)
+    ROOT.mkdir(parents=True, exist_ok=True)
+    INSTANCES.mkdir(parents=True, exist_ok=True)
+    try:
+        if a.cmd == "state":
+            cli_state()
+        elif a.cmd == "login":
+            cli_login()
+        elif a.cmd == "launch":
+            cli_launch(a.id, a.account)
+        elif a.cmd == "create":
+            cli_create(a.name.strip(), a.version, a.loader, a.boost)
+        elif a.cmd == "delete":
+            if not (INSTANCES / a.id / "instance.json").exists():
+                raise IOError("That instance no longer exists.")
+            shutil.rmtree(INSTANCES / a.id, ignore_errors=True)
+            cli_emit(type="deleted", id=a.id)
+        elif a.cmd == "boost":
+            inst = load_json(INSTANCES / a.id / "instance.json", None)
+            if not inst:
+                raise IOError("That instance no longer exists.")
+            inst["perf_flags"] = True
+            save_instance(inst)
+            install_perf_mods(inst, cli_log)
+            cli_emit(type="instance", instance=cli_instance_dict(load_json(INSTANCES / a.id / "instance.json", inst)))
+        elif a.cmd == "versions":
+            cli_emit(type="versions", loader=a.loader,
+                     versions=[{"version": v, "stable": bool(s)} for v, s in list_game_versions(a.loader)])
+        elif a.cmd == "search":
+            cli_search(a.source, a.query.strip(), a.limit)
+        elif a.cmd == "install-pack":
+            if a.source == "curseforge":
+                key = load_json(CONFIG, {}).get("curseforge_key", "")
+                if not key:
+                    raise IOError("CurseForge needs an API key. Run: set-key <key>")
+                set_cf_key(key)
+                inst = install_cf_modpack(a.id, cli_log, cli_progress)
+            else:
+                inst = install_modrinth_pack(a.id, cli_log, cli_progress)
+            cli_emit(type="instance", instance=cli_instance_dict(inst))
+        elif a.cmd == "signout":
+            accts = [x for x in cli_accounts() if acct_key(x) != a.key]
+            save_json(ACCOUNTS, {"accounts": accts}, private=True)
+            cfg = load_json(CONFIG, {})
+            if cfg.get("account") == a.key:
+                cfg["account"] = acct_key(accts[0]) if accts else None
+                save_json(CONFIG, cfg, private=True)
+        elif a.cmd == "update":
+            inst = load_json(INSTANCES / a.id / "instance.json", None)
+            if not inst:
+                raise IOError("That instance no longer exists.")
+            if a.name and a.name.strip():
+                inst["name"] = a.name.strip()
+            if a.ram:
+                inst["ram_gb"] = max(1, min(64, a.ram))
+            if a.java is not None:
+                inst["java"] = a.java.strip()
+            if a.jvm is not None:
+                inst["jvm_args"] = a.jvm.strip()
+            if a.icon:
+                src = Path(a.icon)
+                if src.suffix.lower() not in (".png", ".gif") or not src.is_file():
+                    raise IOError("Pick a PNG or GIF image.")
+                new_name = f"icon-{int(time.time())}{src.suffix.lower()}"
+                shutil.copyfile(src, INSTANCES / a.id / new_name)
+                old_icon = inst.get("icon")
+                inst["icon"] = new_name
+                if old_icon and old_icon != new_name:
+                    (INSTANCES / a.id / old_icon).unlink(missing_ok=True)
+            save_instance(inst)
+            cli_emit(type="instance", instance=cli_instance_dict(load_json(INSTANCES / a.id / "instance.json", inst)))
+        elif a.cmd == "content-list":
+            cli_content_list(a.id, a.kind, a.world)
+        elif a.cmd == "content-toggle":
+            cli_content_toggle(a.id, a.kind, a.file or "", a.world)
+        elif a.cmd == "content-remove":
+            cli_content_remove(a.id, a.kind, a.file or "", a.world)
+        elif a.cmd == "content-search":
+            cli_content_search(a.id, a.kind, a.query.strip(), a.source)
+        elif a.cmd == "content-install":
+            cli_content_install(a.id, a.kind, a.project or "", a.source, a.world)
+        elif a.cmd == "worlds":
+            cli_worlds(a.id)
+        elif a.cmd == "world-backup":
+            inst = cli_inst(a.id)
+            if a.world not in list_worlds(inst):
+                raise IOError("That world no longer exists.")
+            backup_world(inst, a.world)
+            cli_worlds(a.id)
+        elif a.cmd == "world-restore":
+            inst = cli_inst(a.id)
+            z = INSTANCES / a.id / "backups" / Path(a.backup or "").name
+            if not z.is_file():
+                raise IOError("That backup is gone.")
+            restore_backup(inst, z)
+            cli_worlds(a.id)
+        elif a.cmd == "world-delete":
+            inst = cli_inst(a.id)
+            if a.world not in list_worlds(inst):
+                raise IOError("That world no longer exists.")
+            shutil.rmtree(game_dir_of(inst) / "saves" / a.world, ignore_errors=True)
+            cli_worlds(a.id)
+        elif a.cmd == "skin":
+            cli_skin(a.account)
+        elif a.cmd == "skin-upload":
+            data = Path(a.png).read_bytes()
+            skin_upload(cli_fresh_account(a.account)["access_token"], data, a.variant)
+            cli_skin(a.account)
+        elif a.cmd == "skin-library":
+            cli_emit(type="library", skins=cli_skin_lib())
+        elif a.cmd == "skin-template":
+            out = cli_skin_cache() / "template.png"
+            out.write_bytes(png_encode(64, 64, template_skin()))
+            cli_emit(type="template", path=str(out))
+        elif a.cmd == "skin-save":
+            cli_skin_save(a.name, a.slim, a.png, a.id)
+        elif a.cmd == "skin-delete":
+            entry = next((e for e in lib_load() if e["id"] == a.id), None)
+            if entry:
+                lib_remove(entry)
+            cli_emit(type="library", skins=cli_skin_lib())
+        elif a.cmd == "skin-import":
+            acct = cli_fresh_account(a.account)
+            png, slim = account_skin(acct["access_token"])
+            lib_add(acct["username"], slim, skin_from_png(png),
+                    next((e for e in lib_load() if e.get("name") == acct["username"]), None))
+            cli_emit(type="library", skins=cli_skin_lib())
+        elif a.cmd == "cape-set":
+            cape_set(cli_fresh_account(a.account)["access_token"], None if a.cape == "none" else a.cape)
+            cli_skin(a.account)
+        elif a.cmd == "cursors":
+            cli_cursors()
+        elif a.cmd == "cursor-set":
+            cfg = load_json(CONFIG, {})
+            if a.style:
+                cfg["cursor_style"] = a.style
+            if a.scope:
+                cfg["cursor_scope"] = a.scope
+            save_json(CONFIG, cfg, private=True)
+            cli_cursors()
+        elif a.cmd == "pref-set":
+            cfg = load_json(CONFIG, {})
+            if a.accent:
+                cfg["accent"] = a.accent
+            if a.theme:
+                cfg["theme"] = a.theme
+            if a.splash:
+                cfg["splash"] = a.splash == "on"
+            if a.outro:
+                cfg["outro"] = a.outro == "on"
+            if a.glass:
+                cfg["liquid_glass"] = a.glass == "on"
+            save_json(CONFIG, cfg, private=True)
+        elif a.cmd == "mods-check":
+            cli_mod_updates(a.id)
+        elif a.cmd == "mods-update":
+            cli_mod_update(a.id, a.project)
+        elif a.cmd == "duplicate":
+            new = duplicate_instance(cli_inst(a.id), a.name.strip() or "Copy")
+            cli_emit(type="instance", instance=cli_instance_dict(load_json(INSTANCES / new["id"] / "instance.json", new)))
+        elif a.cmd == "import":
+            inst = import_any(a.path, cli_log, cli_progress)
+            cli_emit(type="instance", instance=cli_instance_dict(load_json(INSTANCES / inst["id"] / "instance.json", inst)))
+        elif a.cmd == "export":
+            export_instance(cli_inst(a.id), a.out)
+            cli_emit(type="exported", path=a.out)
+        elif a.cmd == "set-key":
+            cfg = load_json(CONFIG, {})
+            cfg["curseforge_key"] = a.key.strip()
+            save_json(CONFIG, cfg, private=True)
+        cli_emit(type="done")
+        return 0
+    except Exception as e:  # noqa: BLE001
+        cli_emit(type="error", message=str(e) or e.__class__.__name__)
+        return 1
+
+
 def main():
+    if "--cli" in sys.argv:
+        sys.exit(cli_main(sys.argv[sys.argv.index("--cli") + 1:]))
     ROOT.mkdir(parents=True, exist_ok=True)
     INSTANCES.mkdir(parents=True, exist_ok=True)
     root = tk.Tk()

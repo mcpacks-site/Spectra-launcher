@@ -1,0 +1,52 @@
+name: Build Spectra for Mac (native)
+
+# Run by hand from the Actions tab, or automatically when you publish a release.
+# Release assets produced: Spectra-Installer.dmg, Spectra-app.zip, latest.json (signed).
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  mac-app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest        # Xcode 26+ turns on real Liquid Glass
+      - name: Install signing helper
+        run: python3 -m pip install --break-system-packages cryptography || python3 -m pip install cryptography
+      - name: Write the update signing key
+        env:
+          SPECTRA_UPDATE_KEY: ${{ secrets.SPECTRA_UPDATE_KEY }}
+        run: |
+          if [ -n "$SPECTRA_UPDATE_KEY" ]; then
+            printf '%s' "$SPECTRA_UPDATE_KEY" > "$RUNNER_TEMP/update-private.key"
+            echo "SPECTRA_UPDATE_KEY_FILE=$RUNNER_TEMP/update-private.key" >> "$GITHUB_ENV"
+          else
+            echo "No SPECTRA_UPDATE_KEY secret: building without a signed latest.json."
+          fi
+      - name: Build (bundles Python, builds updater + installer)
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_NOTES: ${{ github.event.release.name }}
+        run: ./mac-app/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Spectra-mac
+          path: |
+            mac-app/build/Spectra-Installer.dmg
+            mac-app/build/Spectra-app.zip
+            mac-app/build/latest.json
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FILES="mac-app/build/Spectra-Installer.dmg mac-app/build/Spectra-app.zip"
+          [ -f mac-app/build/latest.json ] && FILES="$FILES mac-app/build/latest.json"
+          gh release upload "${{ github.event.release.tag_name }}" $FILES --clobber
