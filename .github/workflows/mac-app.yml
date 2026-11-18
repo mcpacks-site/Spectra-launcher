@@ -32,6 +32,7 @@ jobs:
           fi
       - name: Build (bundles Python, builds updater + installer)
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           RELEASE_NOTES: ${{ github.event.release.name }}
         run: ./mac-app/build.sh
