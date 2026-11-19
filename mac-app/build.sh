@@ -142,10 +142,54 @@ echo "$VERSION" > "$INST/Contents/Resources/payload-version.txt"
 codesign --force --deep --sign - "$INST"
 
 echo "Packing Spectra-Installer.dmg…"
-rm -f build/Spectra-Installer.dmg
+rm -f build/Spectra-Installer.dmg build/rw.dmg
 STAGE="$(mktemp -d)"
 cp -R "$INST" "$STAGE/"
-hdiutil create -quiet -volname "Install Spectra" -srcfolder "$STAGE" -ov -format UDZO build/Spectra-Installer.dmg
+VOL="Install Spectra"
+
+plain_dmg() { hdiutil create -quiet -volname "$VOL" -srcfolder "$STAGE" -ov -format UDZO build/Spectra-Installer.dmg; }
+
+# Styled window (background art, big centered icon). Needs Finder; if anything goes wrong we fall back to a plain dmg.
+style_dmg() {
+  mkdir -p "$STAGE/.background"
+  cp dmg-background.png "$STAGE/.background/bg.png"
+  cp "dmg-background@2x.png" "$STAGE/.background/bg@2x.png"
+  hdiutil create -quiet -volname "$VOL" -srcfolder "$STAGE" -fs HFS+ -format UDRW -ov build/rw.dmg || return 1
+  local dev
+  dev=$(hdiutil attach -readwrite -noverify -noautoopen build/rw.dmg | grep -E '^/dev/' | head -1 | awk '{print $1}')
+  [ -n "$dev" ] || return 1
+  SetFile -a V "/Volumes/$VOL/.background" 2>/dev/null || chflags hidden "/Volumes/$VOL/.background" 2>/dev/null || true
+  osascript <<OSA || { hdiutil detach "$dev" -force >/dev/null 2>&1; return 1; }
+tell application "Finder"
+  tell disk "$VOL"
+    open
+    set current view of container window to icon view
+    set toolbar visible of container window to false
+    set statusbar visible of container window to false
+    set the bounds of container window to {200, 120, 860, 520}
+    set opts to the icon view options of container window
+    set arrangement of opts to not arranged
+    set icon size of opts to 112
+    set text size of opts to 13
+    set background picture of opts to file ".background:bg.png"
+    set position of item "Install Spectra.app" to {330, 205}
+    update without registering applications
+    delay 2
+    close
+  end tell
+end tell
+OSA
+  sync
+  hdiutil detach "$dev" -quiet || hdiutil detach "$dev" -force -quiet
+  hdiutil convert build/rw.dmg -quiet -format UDZO -imagekey zlib-level=9 -o build/Spectra-Installer.dmg
+}
+
+if ! style_dmg; then
+  echo "NOTE: couldn't style the dmg window here; making a plain one."
+  rm -f build/Spectra-Installer.dmg
+  plain_dmg
+fi
+rm -f build/rw.dmg
 rm -rf "$STAGE"
 
 # --- signed update manifest (release builds) -------------------------------------------------------
