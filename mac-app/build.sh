@@ -118,8 +118,10 @@ for pair in $PY_ARCHS; do
 done
 
 # Ad-hoc sign every Mach-O (the bundled Python has many) then the app. Not notarized.
-find "$APP/Contents/Resources" -type f \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) -print0 \
-  | xargs -0 -I{} sh -c 'file -b "{}" | grep -q Mach-O && codesign --force --sign - "{}" >/dev/null 2>&1 || true'
+find "$APP/Contents/Resources" -type f \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) -print0 |
+  while IFS= read -r -d '' f; do
+    if file -b "$f" | grep -q Mach-O; then codesign --force --sign - "$f" >/dev/null 2>&1 || true; fi
+  done
 codesign --force --deep --sign - "$APP"
 
 # --- Spectra Updater.app -------------------------------------------------------------------------
