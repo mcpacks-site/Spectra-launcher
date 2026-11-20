@@ -1,97 +1,80 @@
-# Spectra Launcher
+# Spectra for Mac (native, Liquid Glass)
 
-A free, open-source launcher for **Minecraft: Java Edition** with **Vanilla, Fabric, Quilt, Forge and NeoForge** support.
-Create separate instances, install mods and their dependencies with a click, and sign in with your own Microsoft account.
+The main Mac version of Spectra. A native SwiftUI app that uses Apple's real Liquid Glass on macOS 26 and
+falls back to frosted material on older macOS. **Python is bundled inside the app**, so there is nothing to install.
 
-> Spectra Launcher is **not an official Minecraft product** and is **not approved by or associated with Mojang or Microsoft**. It is also not affiliated with the Fabric, Quilt, Forge or NeoForge projects.
+`../fabric_launcher.py` stays the one place with the launcher logic; the app runs it with `--cli` and reads
+JSON lines back. The Windows, Linux and plain Python versions are unchanged.
 
-Website: https://mcpacks-site.github.io/Spectra-launcher/
+## What gets built
 
-Discord: https://discord.gg/rWtmhRpa7s
-
-## Features
-
-- **Instances** - keep separate installs, each with its own Minecraft version, mods, memory and Java settings
-- **Vanilla and mod loaders** - pick Vanilla, Fabric, Quilt, Forge or NeoForge for each instance (Vanilla from 1.7.10; Forge and NeoForge versions are whatever their installers support). Forge and NeoForge are installed with their official installers the first time you play.
-- **Automatic setup** - downloads the game files, the mod loader, Fabric API (on Fabric) and a matching Java runtime (Eclipse Temurin) if you don't have one
-- **Mod manager** - search Modrinth (and CurseForge, with your own free API key) for mods that match your instance's loader, install them with their required dependencies, and enable, disable or remove them
-- **Mods, resource packs, shaders and datapacks** - each instance has tabs to search Modrinth or CurseForge, install and enable, disable or remove every kind of content. Datapacks go into the world you pick.
-- **Modpacks** - browse Modrinth or CurseForge modpacks and install one as a new instance. You can also import a Modrinth `.mrpack`, a CurseForge modpack zip, a Prism Launcher / PolyMC / MultiMC export, or a Spectra export, and copy instances straight from Prism, PolyMC, MultiMC or the CurseForge app if they are installed on this computer. Some CurseForge authors don't allow other launchers to download their files; Spectra lists those and links you to the page to get them yourself.
-- **Instance tools** - duplicate an instance, export it to a zip and import it elsewhere, back up and restore worlds, browse screenshots, and see playtime.
-- **Launch options** - per-instance window size, fullscreen, auto-join a server, and a card colour.
-- **Themes** - dark or light, with five accent colours (Settings page).
-- **Custom cursors** - pick a pointer style for the launcher; optionally add the Cursors Extended mod to your instances for in-game pointers. On Windows the pointer can also be applied system-wide while the launcher is open.
-- **Skins** - upload a skin PNG (64x64, or the old 64x32 format) and apply it to your account, import the skin you already have, or design one in the built-in skin maker with a rotatable 3D preview. You can paint on the flat texture or directly on the 3D model. Capes you own can be previewed on the model and equipped from the same page.
-- **Your own account** - sign in with the Microsoft account that owns Minecraft: Java Edition. Only accounts that own the game can sign in and launch it. No license, authentication or safety checks are bypassed or disabled.
-
-## Install
-
-Download the latest installer from the [Releases page](https://github.com/mcpacks-site/Spectra-launcher/releases):
-
-- **Windows** - unzip `SpectraLauncher-Windows.zip` and run `SpectraLauncher.exe`. No installation needed. Windows SmartScreen may warn about an unrecognised publisher because the app isn't code-signed yet: click **More info** then **Run anyway**.
-- **macOS** - open `SpectraLauncher.dmg` and drag Spectra Launcher into Applications. The app isn't notarized yet, so the first time, right-click it and choose **Open**.
-- **Linux** - unzip `SpectraLauncher-Linux.zip` and run `SpectraLauncher`.
-
-## Requirements (running from source)
-
-- A Microsoft account that owns **Minecraft: Java Edition**
-- Python 3.8 or newer **with tkinter** (included with the installers from python.org on Windows and macOS; on Debian/Ubuntu install it with `sudo apt install python3-tk`)
-- An internet connection for the first launch
-- No third-party Python packages are needed
-
-## Run it
-
-```bash
-python fabric_launcher.py
-```
-
-On some systems the command is `python3 fabric_launcher.py`.
-
-## How to use
-
-1. Run the launcher.
-2. Click **Accounts**, then **Add Microsoft account**. A Microsoft page opens and the code is copied to your clipboard. Paste it in and sign in with the account that owns Minecraft.
-3. Click **Add instance**, choose a Minecraft version, and create it. Fabric API is installed automatically (you can turn this off).
-4. Select the instance and click **Launch** (or double-click it). The first launch downloads everything it needs, which can take a few minutes.
-5. Open **Skins** to upload a PNG or open the **Skin maker**, then click **Use this skin** to apply it to your signed-in account.
-6. Use **Edit / Mods** to change memory and Java settings, and to search for and install mods.
-
-## Where your data is stored
-
-Everything stays on your computer, in the `SpectraLauncher` folder:
-
-| System | Location |
+| Output | What it is |
 |---|---|
-| Windows | `%APPDATA%\SpectraLauncher` |
-| macOS | `~/Library/Application Support/SpectraLauncher` |
-| Linux | `~/.local/share/SpectraLauncher` |
+| `Install Spectra.app` (in `Spectra-Installer.dmg`) | The installer. Carries Spectra and the Updater, puts both in Applications, sets up a daily update check. |
+| `Spectra.app` | The launcher. |
+| `Spectra Updater.app` | Downloads signed releases from this repo's GitHub releases and swaps them into `Spectra.app`. |
+| `Spectra-app.zip`, `latest.json` | What the Updater downloads (the zip) and reads (the signed manifest). Release assets only. |
+| `Spectra-Installer-Intel.dmg`, `Spectra-app-intel.zip`, `latest-intel.json` | The same three for Intel Macs. The Intel Updater reads `latest-intel.json`, so each kind of Mac only ever gets its own build. |
 
-Your instances (worlds and mods) are in `instances/`. Your sign-in tokens are in `accounts.json` in that folder; keep the folder private and don't share that file.
+## Build
 
-## Privacy
+    cd mac-app
+    ./build.sh
+    open build/Spectra-Installer.dmg
 
-Spectra Launcher runs entirely on your computer. The project runs no servers and collects no data. The launcher connects only to:
+For the Intel version run `ARCH_TAG=intel ./build.sh` (cross-compiles on an Apple Silicon Mac; output goes to `build/` with `-Intel` in the names).
 
-- Microsoft, Xbox Live and Mojang - to sign you in, verify you own Minecraft, and download the game
-- Fabric, Quilt, Forge and NeoForge - to download the mod loader and its version lists
-- Modrinth - to search for and download mods
-- CurseForge - only if you add an API key in Settings, to search for and download mods and modpacks (the key is stored only on your computer)
-- Adoptium - to download Java if you don't have a suitable version
-- Mojang's skin servers (`api.minecraftservices.com`, `textures.minecraft.net`) - only when you apply or import a skin
+First build downloads Python (cached in `build/cache`). Use Xcode 26+ for real glass. If you get
+"permission denied", run `chmod +x build.sh` once.
 
-Sign-in uses Microsoft's standard device code flow with the scope `XboxLive.signin offline_access`. Your Microsoft password is never seen by the launcher. The full policy is on the [website](https://mcpacks-site.github.io/Spectra-launcher/#privacy).
+### In Xcode instead
+File > Open the `mac-app` folder, choose the Spectra scheme, Run. For Xcode runs (no bundle) set
+`SPECTRA_CORE` to the path of `fabric_launcher.py` and, if you have no system Python, `SPECTRA_PYTHON`.
 
-## Troubleshooting
+## Self-updating releases (one-time setup)
 
-- **"CERTIFICATE_VERIFY_FAILED" on macOS** - the launcher normally handles this itself. If it still happens, open the Python folder in Applications and double-click **Install Certificates.command**.
-- **"Minecraft login failed"** - the account you signed in with doesn't own Minecraft: Java Edition.
-- **A mod isn't listed** - it may not have a build for that instance's loader and Minecraft version.
-- **CurseForge says to add a key** - CurseForge only lets apps use its catalogue with an API key. Create a free one at console.curseforge.com and paste it into Settings.
+Updates are signed with **your own** Ed25519 key. Nothing to do with Apple, no fee.
 
-## License
+1. Make the key pair (needs `pip install cryptography`):
 
-MIT. See [LICENSE](LICENSE).
+       python3 tools/updatekey.py gen private.key update-public.key
 
-## Contact
+2. Commit `mac-app/update-public.key` (public, safe). **Never commit `private.key`.**
+3. GitHub repo > Settings > Secrets and variables > Actions > New secret named `SPECTRA_UPDATE_KEY`,
+   value = the contents of `private.key`. Keep a backup of that file somewhere safe: if you lose it, existing
+   installs can't be updated and people need to reinstall.
+4. To release: bump `mac-app/VERSION` (for example `1.0.1`), commit, then publish a GitHub release
+   (any tag, e.g. `v1.0.1`). The workflow builds, signs, and attaches `Spectra-Installer.dmg`,
+   `Spectra-app.zip` and `latest.json`. The release must be the repo's latest release, because the Updater reads
+   `releases/latest/download/latest.json`.
 
-hilderbrandzachary@gmail.com
+The Updater installs an update only if all of these hold: the manifest signature verifies against the public key
+built into the Updater, the download URL is under this repo's `releases/download/`, the zip's SHA-256 matches the
+signed one, and the unpacked app has Spectra's bundle id and exactly the signed version. A backup of the previous
+version is kept (Updater > "Restore previous version").
+
+If you build locally without `update-public.key`, the Updater is built but refuses to install anything.
+
+## How the Updater is allowed to manage Spectra
+
+The Installer puts `Spectra.app` and `Spectra Updater.app` side by side (in `/Applications`, or `~/Applications` if
+that isn't writable) and registers a per-user LaunchAgent that runs the Updater once a day in the background. It
+stays invisible unless an update exists. On macOS 13+ an app replacing another app may need
+**System Settings > Privacy & Security > App Management** permission; the Installer and the Updater both tell the
+user this and have a button that opens that page. (Whether macOS prompts depends on your macOS version and
+signing, so this path is the part most worth testing on a clean Mac.)
+
+## Notes
+- Unsigned and not notarized: the first time someone opens the **Installer** macOS blocks it. On macOS 15 and later
+  they go to System Settings > Privacy & Security > Security and click **Open Anyway** (right-click > Open no longer works there). Apps the Installer places don't carry the download quarantine, so Spectra itself opens normally.
+- Updating the Updater itself: re-run the newest Installer.
+- CurseForge needs your own free API key (Settings), stored locally only.
+- Packs whose authors blocked third-party downloads open their CurseForge page instead of installing.
+
+## Extras added in this version
+- **Servers tab** (per instance): save servers and press Join to start Minecraft already connected.
+- **Automatic world backups** before each launch (Settings: on/off and how many to keep per world).
+- **Crash analysis**: the crash card names likely culprit mods and offers "Turn off".
+- **Favorites and groups** in the sidebar (hero "…" menu).
+- **Discord Rich Presence** (Settings): needs your own free Discord application ID.
+- Java is downloaded automatically for each Minecraft version (nothing to set up).
