@@ -272,3 +272,52 @@ struct WorldsTab: View {
         .task(id: inst.id) { await store.loadWorlds(inst) }
     }
 }
+
+
+// MARK: - Servers
+
+struct ServersTab: View {
+    @EnvironmentObject var store: Store
+    let inst: Instance
+    @State private var name = ""
+    @State private var ip = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            PanelHeader(title: "Servers · \(store.servers.count)") { EmptyView() }
+            if store.servers.isEmpty {
+                Text("No servers yet. Add one below, then press Join to start Minecraft already connected to it.")
+                    .foregroundStyle(T.dim)
+            }
+            ForEach(store.servers) { s in
+                HStack(spacing: 12) {
+                    Image(systemName: "server.rack").font(.system(size: 18)).foregroundStyle(T.accent).frame(width: 28)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(s.name).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                        Text(s.ip).font(.caption).foregroundStyle(T.dim).lineLimit(1)
+                    }
+                    Spacer()
+                    Button("Join") { store.play(inst, server: s.ip) }
+                        .glassButton(prominent: true).controlSize(.small).disabled(store.running)
+                    Button { Task { await store.removeServer(inst, s) } } label: { Image(systemName: "trash") }
+                        .buttonStyle(.plain).foregroundStyle(T.dim)
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.05)))
+            }
+            HStack {
+                TextField("Name (optional)", text: $name).textFieldStyle(.roundedBorder).frame(width: 180)
+                TextField("play.example.com", text: $ip).textFieldStyle(.roundedBorder)
+                Button("Add") {
+                    let n = name, a = ip
+                    Task { await store.addServer(inst, name: n, ip: a); name = ""; ip = "" }
+                }
+                .glassButton().disabled(ip.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .glass(cornerRadius: 22)
+        .task(id: inst.id) { await store.loadServers(inst) }
+    }
+}

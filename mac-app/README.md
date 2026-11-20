@@ -14,12 +14,15 @@ JSON lines back. The Windows, Linux and plain Python versions are unchanged.
 | `Spectra.app` | The launcher. |
 | `Spectra Updater.app` | Downloads signed releases from this repo's GitHub releases and swaps them into `Spectra.app`. |
 | `Spectra-app.zip`, `latest.json` | What the Updater downloads (the zip) and reads (the signed manifest). Release assets only. |
+| `Spectra-Installer-Intel.dmg`, `Spectra-app-intel.zip`, `latest-intel.json` | The same three for Intel Macs. The Intel Updater reads `latest-intel.json`, so each kind of Mac only ever gets its own build. |
 
 ## Build
 
     cd mac-app
     ./build.sh
     open build/Spectra-Installer.dmg
+
+For the Intel version run `ARCH_TAG=intel ./build.sh` (cross-compiles on an Apple Silicon Mac; output goes to `build/` with `-Intel` in the names).
 
 First build downloads Python (cached in `build/cache`). Use Xcode 26+ for real glass. If you get
 "permission denied", run `chmod +x build.sh` once.
@@ -67,3 +70,11 @@ signing, so this path is the part most worth testing on a clean Mac.)
 - Updating the Updater itself: re-run the newest Installer.
 - CurseForge needs your own free API key (Settings), stored locally only.
 - Packs whose authors blocked third-party downloads open their CurseForge page instead of installing.
+
+## Extras added in this version
+- **Servers tab** (per instance): save servers and press Join to start Minecraft already connected.
+- **Automatic world backups** before each launch (Settings: on/off and how many to keep per world).
+- **Crash analysis**: the crash card names likely culprit mods and offers "Turn off".
+- **Favorites and groups** in the sidebar (hero "…" menu).
+- **Discord Rich Presence** (Settings): needs your own free Discord application ID.
+- Java is downloaded automatically for each Minecraft version (nothing to set up).

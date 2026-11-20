@@ -8,9 +8,14 @@ final class InstallerDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 440),
-                         styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 560),
+                         styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
         w.title = "Install Spectra"
+        w.titlebarAppearsTransparent = true
+        w.titleVisibility = .hidden
+        w.isMovableByWindowBackground = true
+        w.backgroundColor = NSColor(red: 0.07, green: 0.06, blue: 0.16, alpha: 1)
+        w.appearance = NSAppearance(named: .darkAqua)
         w.isReleasedWhenClosed = false
         w.contentView = NSHostingView(rootView: InstallerView(model: model))
         w.center()

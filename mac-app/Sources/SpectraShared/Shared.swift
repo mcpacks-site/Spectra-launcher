@@ -10,7 +10,11 @@ public enum SpectraIDs {
     public static let appFolderName = "Spectra.app"
     public static let updaterFolderName = "Spectra Updater.app"
     /// The only place updates are ever fetched from.
+    #if INTEL
+    public static let manifestURL = URL(string: "https://github.com/mcpacks-site/Spectra-launcher/releases/latest/download/latest-intel.json")!
+    #else
     public static let manifestURL = URL(string: "https://github.com/mcpacks-site/Spectra-launcher/releases/latest/download/latest.json")!
+    #endif
     public static let allowedDownloadPrefix = "https://github.com/mcpacks-site/Spectra-launcher/releases/download/"
     public static let privacyAppManagementURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles")!
 }

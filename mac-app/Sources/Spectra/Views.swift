@@ -140,9 +140,16 @@ struct SidebarView: View {
 
             ScrollView {
                 LazyVStack(spacing: 4) {
-                    ForEach(store.visibleInstances) { inst in
-                        InstanceRow(inst: inst, selected: inst.id == store.selected?.id)
-                            .onTapGesture { store.selectedID = inst.id; store.tab = .home }
+                    ForEach(store.sidebarSections, id: \.title) { section in
+                        if !section.title.isEmpty {
+                            Text(section.title.uppercased())
+                                .font(.system(size: 10, weight: .semibold)).tracking(1).foregroundStyle(T.dim)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8).padding(.leading, 6)
+                        }
+                        ForEach(section.items) { inst in
+                            InstanceRow(inst: inst, selected: inst.id == store.selected?.id)
+                                .onTapGesture { store.selectedID = inst.id; store.tab = .home }
+                        }
                     }
                     if store.visibleInstances.isEmpty && !store.instances.isEmpty {
                         Text("No instances match “\(store.instanceQuery)”.")
@@ -220,6 +227,7 @@ struct InstanceRow: View {
                 Text("\(inst.version)  ·  \(inst.loaderLabel)").font(.system(size: 12)).foregroundStyle(T.dim).lineLimit(1)
             }
             Spacer(minLength: 0)
+            if inst.favorite { Image(systemName: "star.fill").font(.system(size: 11)).foregroundStyle(T.accent) }
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(T.accent.opacity(selected ? 0.16 : 0)))
@@ -356,6 +364,7 @@ struct HomeView: View {
                     case .packs: ContentTab(inst: inst, kind: "resourcepack")
                     case .shaders: ContentTab(inst: inst, kind: "shader")
                     case .datapacks: ContentTab(inst: inst, kind: "datapack")
+                    case .servers: ServersTab(inst: inst)
                     case .worlds: WorldsTab(inst: inst)
                     case .screenshots: ScreenshotsCard(inst: inst, limit: 200)
                     }
@@ -412,6 +421,9 @@ struct HomeView: View {
                         }
                         Spacer(minLength: 0)
                         Menu {
+                            Button(inst.favorite ? "Remove from favorites" : "Add to favorites") { store.setFavorite(inst, !inst.favorite) }
+                            Button("Set group…") { store.askGroup(inst) }
+                            Divider()
                             Button("Duplicate…") { store.duplicate(inst) }
                             Button("Export…") { store.export(inst) }
                             Button("Open crash reports") { store.openContentFolder(inst, kind: "crash-reports") }
@@ -924,6 +936,25 @@ struct CrashSheet: View {
             Label("\(info.name) closed unexpectedly", systemImage: "exclamationmark.triangle.fill")
                 .font(.title3.bold())
             Text("Exit code \(info.code). \(hint)").foregroundStyle(.secondary)
+            if let a = store.analysis, !(a.issues.isEmpty && a.suspects.isEmpty) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("What Spectra found", systemImage: "wand.and.stars").font(.system(size: 13, weight: .semibold))
+                    ForEach(a.issues, id: \.self) { Text("• \($0)").font(.callout) }
+                    ForEach(a.suspects) { s in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(s.name).font(.system(size: 13, weight: .semibold))
+                                Text(s.reason).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Turn off") { store.disableSuspect(s) }.controlSize(.small)
+                        }
+                    }
+                    Text("Best guesses from the crash report, not certainties.").font(.caption2).foregroundStyle(.secondary)
+                }
+                .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.06)))
+            }
             ScrollView {
                 Text(info.tail.joined(separator: "\n"))
                     .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)

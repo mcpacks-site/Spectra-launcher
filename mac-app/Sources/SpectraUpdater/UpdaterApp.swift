@@ -25,9 +25,14 @@ final class UpdaterDelegate: NSObject, NSApplicationDelegate {
     func showWindow() {
         NSApp.setActivationPolicy(.regular)
         if window == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 380),
-                             styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 500),
+                             styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
             w.title = "Spectra Updater"
+            w.titlebarAppearsTransparent = true
+            w.titleVisibility = .hidden
+            w.isMovableByWindowBackground = true
+            w.backgroundColor = NSColor(red: 0.07, green: 0.06, blue: 0.16, alpha: 1)
+            w.appearance = NSAppearance(named: .darkAqua)
             w.isReleasedWhenClosed = false
             w.contentView = NSHostingView(rootView: UpdaterView(model: model))
             w.center()

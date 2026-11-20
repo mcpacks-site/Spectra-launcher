@@ -22,6 +22,7 @@ struct FieldLabel: View {
 struct SettingsView: View {
     @EnvironmentObject var store: Store
     @State private var key = ""
+    @State private var discordID = ""
 
     var body: some View {
         ScrollView {
@@ -70,6 +71,43 @@ struct SettingsView: View {
                         }
                     }
                     .toggleStyle(.switch).tint(T.accent)
+                }
+
+                SettingsCard {
+                    Toggle(isOn: Binding(get: { store.autoBackup }, set: { store.setAutoBackup($0) })) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Back up worlds before playing").font(.system(size: 15))
+                            Text("Saves a zip of any world that changed since its last backup. Restore from the Worlds tab.")
+                                .font(.caption).foregroundStyle(T.dim)
+                        }
+                    }
+                    .toggleStyle(.switch).tint(T.accent)
+                    if store.autoBackup {
+                        Stepper("Keep the last \(store.backupsKeep) automatic backups per world",
+                                value: Binding(get: { store.backupsKeep }, set: { store.setBackupsKeep($0) }), in: 1...20)
+                            .font(.system(size: 13))
+                    }
+                }
+
+                SettingsCard {
+                    Toggle(isOn: Binding(get: { store.presenceOn }, set: { store.setPresence($0) })) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Discord Rich Presence").font(.system(size: 15))
+                            Text("Shows “Playing <instance>” on your Discord profile while the game runs. Only the instance name and Minecraft version are shared.")
+                                .font(.caption).foregroundStyle(T.dim)
+                        }
+                    }
+                    .toggleStyle(.switch).tint(T.accent)
+                    if store.presenceOn {
+                        HStack(spacing: 10) {
+                            SecureField(store.discordSet ? "Application ID saved" : "Discord application ID", text: $discordID)
+                                .textFieldStyle(.roundedBorder)
+                            Button("Save") { store.setDiscordID(discordID); discordID = "" }
+                                .glassButton().disabled(discordID.trimmingCharacters(in: .whitespaces).isEmpty)
+                        }
+                        Text("Create a free application at discord.com/developers and paste its Application ID here.")
+                            .font(.caption).foregroundStyle(T.dim)
+                    }
                 }
 
                 SettingsCard {

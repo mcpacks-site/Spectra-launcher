@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds Spectra for Mac: Spectra.app (SwiftUI, Liquid Glass on macOS 26+, own Python inside), Spectra Updater.app,
-# and "Install Spectra.app" (the installer, which carries both) packed in build/Spectra-Installer.dmg.
+# and "Install Spectra.app" (the installer, which carries both) packed in "$OUT/Spectra-Installer.dmg".
 #
 # Optional, for self-updating releases:
 #   update-public.key           (made once by: python3 tools/updatekey.py gen private.key update-public.key)
@@ -15,9 +15,26 @@ CORE="../fabric_launcher.py"
 CACHE="build/cache"
 mkdir -p "$CACHE"
 
+# ARCH_TAG=intel ./build.sh  builds the Intel Mac version (x86_64) next to the Apple Silicon one:
+#   build/Spectra-Installer-Intel.dmg, build/Spectra-app-intel.zip, build/latest-intel.json
+ARCH_TAG="${ARCH_TAG:-arm}"
+OUT="build/$ARCH_TAG"
+mkdir -p "$OUT"
+SWIFT_EXTRA=""
+SUFFIX=""
+ZIPREL="Spectra-app.zip"
+MANIFEST="latest.json"
+
 # Apple Silicon only by default (macOS 26+ and Liquid Glass are for Apple Silicon Macs).
 # Run with UNIVERSAL=1 ./build.sh to also include Intel.
-if [ "${UNIVERSAL:-0}" = "1" ]; then
+if [ "$ARCH_TAG" = "intel" ]; then
+  SWIFT_ARCHS="--arch x86_64"
+  PY_ARCHS="x86_64:x86_64"
+  SWIFT_EXTRA="-Xswiftc -DINTEL --scratch-path .build-intel"
+  SUFFIX="-Intel"
+  ZIPREL="Spectra-app-intel.zip"
+  MANIFEST="latest-intel.json"
+elif [ "${UNIVERSAL:-0}" = "1" ]; then
   SWIFT_ARCHS="--arch arm64 --arch x86_64"
   PY_ARCHS="aarch64:arm64 x86_64:x86_64"
 else
@@ -68,8 +85,8 @@ else
 fi
 
 echo "Building the apps…"
-swift build -c release $SWIFT_ARCHS
-BINDIR="$(swift build -c release $SWIFT_ARCHS --show-bin-path)"
+swift build -c release $SWIFT_ARCHS $SWIFT_EXTRA
+BINDIR="$(swift build -c release $SWIFT_ARCHS $SWIFT_EXTRA --show-bin-path)"
 
 ICON_ICNS="build/AppIcon.icns"
 iconutil -c icns AppIcon.iconset -o "$ICON_ICNS"
@@ -101,7 +118,7 @@ PLIST
 }
 
 # --- Spectra.app ---------------------------------------------------------------------------------
-APP="build/Spectra.app"
+APP="$OUT/Spectra.app"
 make_bundle "$APP" Spectra "Spectra" "site.mcpacks.spectra.mac" "$VERSION"
 cp "$CORE" "$APP/Contents/Resources/fabric_launcher.py"
 
@@ -125,38 +142,38 @@ find "$APP/Contents/Resources" -type f \( -name "*.dylib" -o -name "*.so" -o -pe
 codesign --force --deep --sign - "$APP"
 
 # --- Spectra Updater.app -------------------------------------------------------------------------
-UPD="build/Spectra Updater.app"
+UPD="$OUT/Spectra Updater.app"
 make_bundle "$UPD" SpectraUpdater "Spectra Updater" "site.mcpacks.spectra.updater" "$VERSION"
 codesign --force --deep --sign - "$UPD"
 
 # --- zips (what the updater downloads, and what the installer carries) -----------------------------
-rm -f build/Spectra-app.zip "build/Spectra-Updater-app.zip"
-ditto -c -k --keepParent "$APP" build/Spectra-app.zip
-ditto -c -k --keepParent "$UPD" build/Spectra-Updater-app.zip
+rm -f "$OUT/Spectra-app.zip" "$OUT/Spectra-Updater-app.zip"
+ditto -c -k --keepParent "$APP" "$OUT/Spectra-app.zip"
+ditto -c -k --keepParent "$UPD" "$OUT/Spectra-Updater-app.zip"
 
 # --- Install Spectra.app ---------------------------------------------------------------------------
-INST="build/Install Spectra.app"
+INST="$OUT/Install Spectra.app"
 make_bundle "$INST" SpectraInstaller "Install Spectra" "site.mcpacks.spectra.installer" "$VERSION"
-cp build/Spectra-app.zip build/Spectra-Updater-app.zip "$INST/Contents/Resources/"
+cp "$OUT/Spectra-app.zip" "$OUT/Spectra-Updater-app.zip" "$INST/Contents/Resources/"
 echo "$VERSION" > "$INST/Contents/Resources/payload-version.txt"
 codesign --force --deep --sign - "$INST"
 
 echo "Packing Spectra-Installer.dmg…"
-rm -f build/Spectra-Installer.dmg build/rw.dmg
+rm -f "$OUT/Spectra-Installer.dmg" "$OUT/rw.dmg"
 STAGE="$(mktemp -d)"
 cp -R "$INST" "$STAGE/"
 VOL="Install Spectra"
 
-plain_dmg() { hdiutil create -quiet -volname "$VOL" -srcfolder "$STAGE" -ov -format UDZO build/Spectra-Installer.dmg; }
+plain_dmg() { hdiutil create -quiet -volname "$VOL" -srcfolder "$STAGE" -ov -format UDZO "$OUT/Spectra-Installer.dmg"; }
 
 # Styled window (background art, big centered icon). Needs Finder; if anything goes wrong we fall back to a plain dmg.
 style_dmg() {
   mkdir -p "$STAGE/.background"
   cp dmg-background.png "$STAGE/.background/bg.png"
   cp "dmg-background@2x.png" "$STAGE/.background/bg@2x.png"
-  hdiutil create -quiet -volname "$VOL" -srcfolder "$STAGE" -fs HFS+ -format UDRW -ov build/rw.dmg || return 1
+  hdiutil create -quiet -volname "$VOL" -srcfolder "$STAGE" -fs HFS+ -format UDRW -ov "$OUT/rw.dmg" || return 1
   local dev
-  dev=$(hdiutil attach -readwrite -noverify -noautoopen build/rw.dmg | grep -E '^/dev/' | head -1 | awk '{print $1}')
+  dev=$(hdiutil attach -readwrite -noverify -noautoopen "$OUT/rw.dmg" | grep -E '^/dev/' | head -1 | awk '{print $1}')
   [ -n "$dev" ] || return 1
   SetFile -a V "/Volumes/$VOL/.background" 2>/dev/null || chflags hidden "/Volumes/$VOL/.background" 2>/dev/null || true
   osascript <<OSA || { hdiutil detach "$dev" -force >/dev/null 2>&1; return 1; }
@@ -181,24 +198,28 @@ end tell
 OSA
   sync
   hdiutil detach "$dev" -quiet || hdiutil detach "$dev" -force -quiet
-  hdiutil convert build/rw.dmg -quiet -format UDZO -imagekey zlib-level=9 -o build/Spectra-Installer.dmg
+  hdiutil convert "$OUT/rw.dmg" -quiet -format UDZO -imagekey zlib-level=9 -o "$OUT/Spectra-Installer.dmg"
 }
 
 if ! style_dmg; then
   echo "NOTE: couldn't style the dmg window here; making a plain one."
-  rm -f build/Spectra-Installer.dmg
+  rm -f "$OUT/Spectra-Installer.dmg"
   plain_dmg
 fi
-rm -f build/rw.dmg
+rm -f "$OUT/rw.dmg"
 rm -rf "$STAGE"
+
+# --- final names in build/ ----------------------------------------------------------------------
+cp "$OUT/Spectra-Installer.dmg" "build/Spectra-Installer$SUFFIX.dmg"
+cp "$OUT/Spectra-app.zip" "build/$ZIPREL"
 
 # --- signed update manifest (release builds) -------------------------------------------------------
 if [ -n "${SPECTRA_UPDATE_KEY_FILE:-}" ] && [ -n "${RELEASE_TAG:-}" ]; then
-  URL="https://github.com/mcpacks-site/Spectra-launcher/releases/download/$RELEASE_TAG/Spectra-app.zip"
-  python3 tools/updatekey.py sign "$SPECTRA_UPDATE_KEY_FILE" "$VERSION" build/Spectra-app.zip "$URL" build/latest.json "${RELEASE_NOTES:-}"
+  URL="https://github.com/mcpacks-site/Spectra-launcher/releases/download/$RELEASE_TAG/$ZIPREL"
+  python3 tools/updatekey.py sign "$SPECTRA_UPDATE_KEY_FILE" "$VERSION" "build/$ZIPREL" "$URL" "build/$MANIFEST" "${RELEASE_NOTES:-}"
 fi
 
 echo
-echo "Done:"
-ls -1 build/Spectra-Installer.dmg build/Spectra-app.zip build/latest.json 2>/dev/null || true
-echo "Try it: open build/Spectra-Installer.dmg"
+echo "Done ($ARCH_TAG):"
+ls -1 "build/Spectra-Installer$SUFFIX.dmg" "build/$ZIPREL" "build/$MANIFEST" 2>/dev/null || true
+echo "Try it: open build/Spectra-Installer$SUFFIX.dmg"

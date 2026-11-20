@@ -38,6 +38,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import webbrowser
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -4909,6 +4910,7 @@ class ContentTab(tk.Frame):
             "primary", h=42).pack(side="right")
         if kind == "mods":
             Btn(foot, "Add performance mods", self.perf, "secondary", h=42).pack(side="right", padx=(0, 8))
+            Btn(foot, "Check for updates", self.check_updates, "secondary", h=42).pack(side="right", padx=(0, 8))
         self.reload()
 
     # ---- locations
@@ -4968,6 +4970,32 @@ class ContentTab(tk.Frame):
                 t.pop(k)
             save_instance(self.inst)
             self.reload()
+
+    def check_updates(self):
+        self.msg.config(text="Checking for mod updates…")
+
+        def done(r):
+            if not self.winfo_exists():
+                return
+            updates, n = r
+            if not updates:
+                self.msg.config(text=("Everything Spectra installed is up to date." if n
+                                      else "No Modrinth mods installed through Spectra to check."))
+                return
+            names = ", ".join(u["title"] for u in updates[:6]) + ("…" if len(updates) > 6 else "")
+            self.msg.config(text=f"{len(updates)} update(s): {names}")
+            if messagebox.askyesno("Mod updates", f"Update {len(updates)} mod(s)?\n\n{names}", parent=self):
+                self.msg.config(text="Updating mods…")
+
+                def fin(_r):
+                    if self.winfo_exists():
+                        self.reload()
+                        self.msg.config(text="Mods updated. Restart the game if it is running.")
+                    self.app.refresh_instances()
+                self.app.bg(lambda: apply_mod_updates(self.inst, [u["id"] for u in updates], self.app.log), fin,
+                            lambda e: self.winfo_exists() and self.msg.config(text=f"Could not update: {e}"))
+        self.app.bg(lambda: find_mod_updates(self.inst), done,
+                    lambda e: self.winfo_exists() and self.msg.config(text=f"Could not check: {e}"))
 
     def perf(self):
         self.msg.config(text="Installing performance mods…")
@@ -6549,6 +6577,8 @@ class App:
                 elif kind == "error":
                     self.toast("Launch failed", "err")
                     messagebox.showerror("Error", msg[1])
+                elif kind == "crash":
+                    self.show_crash(msg[1], msg[2], msg[3])
                 elif kind == "cb":
                     if msg[1]:
                         msg[1](msg[2])
@@ -6663,6 +6693,52 @@ class App:
                     lambda n: (self.refresh_instances(select=n["id"]), self.toast(f"Created {n['name']}")),
                     lambda e: self.toast(f"Copy failed: {e}", "err"))
 
+    def show_crash(self, inst, code, tail):
+        try:
+            found = analyze_crash(inst)
+        except Exception:  # noqa: BLE001
+            found = {"issues": [], "suspects": [], "report": None}
+        d = Dialog(self, "Minecraft closed unexpectedly", 560, 520)
+        lbl(d, f"{inst['name']} closed unexpectedly", 14, "bold").pack(anchor="w", padx=22, pady=(20, 2))
+        lbl(d, f"Exit code {code}.", 9, color=C["muted"]).pack(anchor="w", padx=22)
+        if found["issues"] or found["suspects"]:
+            box = tk.Frame(d, bg=C["card2"], padx=14, pady=10)
+            box.pack(fill="x", padx=22, pady=(12, 0))
+            lbl(box, "WHAT SPECTRA FOUND", 8, "bold", C["dim"]).pack(anchor="w")
+            for msg in found["issues"]:
+                hint(box, "\u2022 " + msg["message"], 480).pack(anchor="w", pady=(4, 0))
+            for s in found["suspects"]:
+                row = tk.Frame(box, bg=C["card2"])
+                row.pack(fill="x", pady=(8, 0))
+                col = tk.Frame(row, bg=C["card2"])
+                col.pack(side="left", fill="x", expand=True)
+                lbl(col, s["name"], 10, "bold").pack(anchor="w")
+                hint(col, s["reason"], 340).pack(anchor="w")
+
+                def turn_off(s=s, row=row):
+                    p = game_dir_of(inst) / "mods" / s["file"]
+                    if p.exists():
+                        p.rename(p.with_name(p.name + ".disabled"))
+                    row.destroy()
+                    self.toast(f"Turned off {s['name']}")
+                Btn(row, "Turn off", turn_off, "secondary", h=32).pack(side="right")
+            hint(box, "Best guesses from the crash report, not certainties.", 480).pack(anchor="w", pady=(8, 0))
+        txt = tk.Text(d, height=12, bg=C["card"], fg=C["text"], relief="flat", font=font(8), wrap="none")
+        txt.insert("1.0", "\n".join(tail))
+        txt.config(state="disabled")
+        txt.pack(fill="both", expand=True, padx=22, pady=12)
+        foot = tk.Frame(d, bg=C["panel"])
+        foot.pack(fill="x", padx=22, pady=(0, 18))
+        Btn(foot, "Close", d.destroy, "primary", h=38).pack(side="right")
+
+        def copy():
+            d.clipboard_clear()
+            d.clipboard_append("\n".join(tail))
+            self.toast("Log copied")
+        Btn(foot, "Copy log", copy, "secondary", h=38).pack(side="right", padx=(0, 8))
+        Btn(foot, "Crash reports", lambda: open_path(game_dir_of(inst) / "crash-reports"), "secondary",
+            h=38).pack(side="right", padx=(0, 8))
+
     def export(self, iid=None):
         inst = self.selected_instance(iid)
         if not inst:
@@ -6705,6 +6781,13 @@ class App:
     def worker(self, inst, acct):
         try:
             acct = self.fresh_account(acct)
+            cfg_now = load_json(CONFIG, {})
+            if cfg_now.get("auto_backup", True):
+                try:
+                    auto_backup_worlds(inst, self.log, keep=int(cfg_now.get("backups_keep", 3)))
+                    save_instance(inst)
+                except Exception as e:  # noqa: BLE001  (a failed backup must never stop you playing)
+                    self.log(f"WARNING: automatic backup skipped: {e}")
             cmd, game_dir = Core(self.log, self.progress).prepare(inst, acct)
             try:
                 sync_cursor_mod(inst, self.cursor_scope() in ("minecraft", "system"), self.log)
@@ -6717,8 +6800,11 @@ class App:
                                     creationflags=NOWIN)
             self.q.put(("running", f"{inst['name']}"))
             t0 = time.time()
+            tail = []
             for line in proc.stdout:
                 self.log(line.rstrip())
+                tail.append(line.rstrip())
+                del tail[:-80]
             code = proc.wait()
             fresh = load_json(INSTANCES / inst["id"] / "instance.json", None) or inst
             fresh["playtime_s"] = int(fresh.get("playtime_s", 0)) + int(time.time() - t0)
@@ -6726,6 +6812,8 @@ class App:
             save_instance(fresh)
             inst.update(playtime_s=fresh["playtime_s"], last_played=fresh["last_played"])
             self.log(f"Minecraft exited with code {code}.")
+            if code != 0:
+                self.q.put(("crash", dict(inst), code, tail))
         except Exception as e:  # noqa: BLE001
             self.log(f"ERROR: {e}")
             self.q.put(("error", str(e)))
@@ -6955,7 +7043,8 @@ def cli_instance_dict(i):
             "loader_label": loader_label(i), "ram_gb": i.get("ram_gb", 4), "mods": len(i.get("mods", {})),
             "playtime_s": int(i.get("playtime_s", 0)), "last_played": int(i.get("last_played", 0)),
             "icon_path": str(icon) if icon else None, "perf": bool(i.get("perf_flags")), "hue": i.get("hue"),
-            "java": i.get("java", ""), "jvm_args": i.get("jvm_args", "")}
+            "java": i.get("java", ""), "jvm_args": i.get("jvm_args", ""),
+            "favorite": bool(i.get("favorite")), "group": i.get("group", "")}
 
 
 def cli_accounts():
@@ -6973,7 +7062,9 @@ def cli_state():
              instances=[cli_instance_dict(i) for i in list_instances()],
              accounts=[cli_public_account(a) for a in accts], account=cfg.get("account"),
              curseforge_key=bool(cfg.get("curseforge_key")), accent=cfg.get("accent", "green"),
-             theme=cfg.get("theme", "dark"), splash=bool(cfg.get("splash", True)), outro=bool(cfg.get("outro", True)), glass=bool(cfg.get("liquid_glass", True)))
+             theme=cfg.get("theme", "dark"), splash=bool(cfg.get("splash", True)), outro=bool(cfg.get("outro", True)), glass=bool(cfg.get("liquid_glass", True)),
+             auto_backup=bool(cfg.get("auto_backup", True)), backups_keep=int(cfg.get("backups_keep", 3)),
+             presence=bool(cfg.get("presence")), discord_id=bool(cfg.get("discord_client_id")))
 
 
 def cli_save_account(acct, make_current=True):
@@ -7018,7 +7109,418 @@ def cli_pick_account(key=None):
     raise IOError("Sign in with your Microsoft account first.")
 
 
-def cli_launch(iid, account_key=None):
+# --------------------------------------------------------------------------
+# Servers (servers.dat), automatic world backups, crash analysis, Discord presence
+# --------------------------------------------------------------------------
+class _NBT:
+    """Tiny NBT reader/writer (uncompressed, big endian) - enough for servers.dat."""
+    END, BYTE, SHORT, INT, LONG, FLOAT, DOUBLE, BYTE_ARRAY, STRING, LIST, COMPOUND, INT_ARRAY, LONG_ARRAY = range(13)
+
+    @classmethod
+    def loads(cls, data):
+        pos = [0]
+
+        def take(n):
+            if pos[0] + n > len(data):
+                raise ValueError("truncated NBT")
+            b = data[pos[0]:pos[0] + n]
+            pos[0] += n
+            return b
+
+        def string():
+            return take(struct.unpack(">H", take(2))[0]).decode("utf-8", "replace")
+
+        def payload(t):
+            if t == cls.BYTE:
+                return struct.unpack(">b", take(1))[0]
+            if t == cls.SHORT:
+                return struct.unpack(">h", take(2))[0]
+            if t == cls.INT:
+                return struct.unpack(">i", take(4))[0]
+            if t == cls.LONG:
+                return struct.unpack(">q", take(8))[0]
+            if t == cls.FLOAT:
+                return ("f", struct.unpack(">f", take(4))[0])
+            if t == cls.DOUBLE:
+                return ("d", struct.unpack(">d", take(8))[0])
+            if t == cls.BYTE_ARRAY:
+                return ("ba", take(struct.unpack(">i", take(4))[0]))
+            if t == cls.STRING:
+                return string()
+            if t == cls.LIST:
+                et = struct.unpack(">b", take(1))[0]
+                n = struct.unpack(">i", take(4))[0]
+                return ("list", et, [payload(et) for _ in range(max(0, n))])
+            if t == cls.COMPOUND:
+                out = {}
+                while True:
+                    ct = struct.unpack(">b", take(1))[0]
+                    if ct == cls.END:
+                        return ("compound", out)
+                    name = string()
+                    out[name] = (ct, payload(ct))
+            if t == cls.INT_ARRAY:
+                n = struct.unpack(">i", take(4))[0]
+                return ("ia", [struct.unpack(">i", take(4))[0] for _ in range(n)])
+            if t == cls.LONG_ARRAY:
+                n = struct.unpack(">i", take(4))[0]
+                return ("la", [struct.unpack(">q", take(8))[0] for _ in range(n)])
+            raise ValueError("bad NBT tag")
+
+        t = struct.unpack(">b", take(1))[0]
+        if t != cls.COMPOUND:
+            raise ValueError("not a compound")
+        string()
+        return payload(t)
+
+    @classmethod
+    def dumps(cls, root):
+        out = bytearray()
+
+        def s(v):
+            b = v.encode("utf-8")
+            out.extend(struct.pack(">H", len(b)) + b)
+
+        def payload(t, v):
+            if t == cls.BYTE:
+                out.extend(struct.pack(">b", v))
+            elif t == cls.SHORT:
+                out.extend(struct.pack(">h", v))
+            elif t == cls.INT:
+                out.extend(struct.pack(">i", v))
+            elif t == cls.LONG:
+                out.extend(struct.pack(">q", v))
+            elif t == cls.FLOAT:
+                out.extend(struct.pack(">f", v[1]))
+            elif t == cls.DOUBLE:
+                out.extend(struct.pack(">d", v[1]))
+            elif t == cls.BYTE_ARRAY:
+                out.extend(struct.pack(">i", len(v[1])) + v[1])
+            elif t == cls.STRING:
+                s(v)
+            elif t == cls.LIST:
+                _, et, items = v
+                out.extend(struct.pack(">b", et) + struct.pack(">i", len(items)))
+                for it in items:
+                    payload(et, it)
+            elif t == cls.COMPOUND:
+                for name, (ct, cv) in v[1].items():
+                    out.extend(struct.pack(">b", ct))
+                    s(name)
+                    payload(ct, cv)
+                out.extend(b"\x00")
+            elif t == cls.INT_ARRAY:
+                out.extend(struct.pack(">i", len(v[1])) + b"".join(struct.pack(">i", x) for x in v[1]))
+            elif t == cls.LONG_ARRAY:
+                out.extend(struct.pack(">i", len(v[1])) + b"".join(struct.pack(">q", x) for x in v[1]))
+
+        out.extend(b"\x0a\x00\x00")
+        payload(cls.COMPOUND, root)
+        return bytes(out)
+
+
+def _servers_path(inst):
+    return game_dir_of(inst) / "servers.dat"
+
+
+def read_servers(inst):
+    """-> (root compound, list of server compounds). Missing/bad file = empty list."""
+    p = _servers_path(inst)
+    try:
+        root = _NBT.loads(p.read_bytes())
+        entry = root[1].get("servers")
+        if entry and entry[0] == _NBT.LIST:
+            return root, entry[1][2]
+    except (OSError, ValueError, struct.error):
+        pass
+    return ("compound", {}), []
+
+
+def _server_view(c):
+    g = lambda k: (c[1].get(k) or (0, ""))[1]  # noqa: E731
+    return {"name": g("name") if isinstance(g("name"), str) else "", "ip": g("ip") if isinstance(g("ip"), str) else ""}
+
+
+def list_servers(inst):
+    return [_server_view(c) for c in read_servers(inst)[1] if c[0] == "compound"]
+
+
+def _write_servers(inst, root, items):
+    root[1]["servers"] = (_NBT.LIST, ("list", _NBT.COMPOUND, items))
+    p = _servers_path(inst)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".dat.tmp")
+    tmp.write_bytes(_NBT.dumps(root))
+    if p.exists():
+        shutil.copyfile(p, p.with_suffix(".dat_old"))
+    os.replace(tmp, p)
+
+
+def add_server(inst, name, ip):
+    name, ip = name.strip(), ip.strip()
+    if not ip or len(ip) > 255 or any(ch.isspace() for ch in ip):
+        raise IOError("Enter a server address like play.example.com")
+    root, items = read_servers(inst)
+    if any(_server_view(c)["ip"].lower() == ip.lower() for c in items):
+        raise IOError("That server is already in the list.")
+    items.append(("compound", {"name": (_NBT.STRING, name or ip), "ip": (_NBT.STRING, ip)}))
+    _write_servers(inst, root, items)
+
+
+def remove_server(inst, ip):
+    root, items = read_servers(inst)
+    keep = [c for c in items if _server_view(c)["ip"].lower() != ip.strip().lower()]
+    if len(keep) == len(items):
+        raise IOError("That server isn't in the list.")
+    _write_servers(inst, root, keep)
+
+
+def quick_play_args(version, ip):
+    """Game arguments that join a server straight away."""
+    ip = ip.strip()
+    host, port = ip, "25565"
+    if ip.startswith("["):                       # [::1]:25565
+        h, _, rest = ip[1:].partition("]")
+        host, port = h, (rest.lstrip(":") or "25565")
+    elif ip.count(":") == 1:
+        host, _, port = ip.partition(":")
+    m = re.match(r"^1\.(\d+)", str(version))
+    if m and int(m.group(1)) < 20:               # before quick play existed
+        return ["--server", host, "--port", port if port.isdigit() else "25565"]
+    return ["--quickPlayMultiplayer", ip]
+
+
+_AUTO_STAMP = re.compile(r"-\d{8}-\d{6}\.zip$")
+
+
+def auto_backup_worlds(inst, log, keep=3, max_bytes=1_500_000_000):
+    """Back up worlds that changed since their newest backup; keep only the last `keep` automatic ones."""
+    made = []
+    bdir = INSTANCES / inst["id"] / "backups"
+    for w in list_worlds(inst):
+        wdir = game_dir_of(inst) / "saves" / w
+        try:
+            changed = (wdir / "level.dat").stat().st_mtime
+            size = sum(p.stat().st_size for p in wdir.rglob("*") if p.is_file())
+        except OSError:
+            continue
+        mine = [p for p in (bdir.glob("*.zip") if bdir.is_dir() else []) if p.name.startswith(w + "-") and _AUTO_STAMP.search(p.name)
+                and p.name[len(w) + 1:-4].replace("-", "").isdigit()]
+        newest = max((p.stat().st_mtime for p in mine), default=0)
+        if changed <= newest:
+            continue
+        if size > max_bytes:
+            log(f"Skipping the automatic backup of '{w}' (over {max_bytes // 1_000_000_000:.1f} GB).")
+            continue
+        log(f"Backing up world '{w}'…")
+        made.append(backup_world(inst, w))
+    tracked = [n for n in inst.get("auto_backups", []) if (bdir / n).exists()] + [p.name for p in made]
+    # prune per world so one busy world can't push out another world's backups
+    by_world = {}
+    for n in tracked:
+        by_world.setdefault(_AUTO_STAMP.sub("", n), []).append(n)
+    final = []
+    for w, names in by_world.items():
+        names = sorted(set(names))
+        for old in names[:-max(1, keep)]:
+            (bdir / old).unlink(missing_ok=True)
+        final += names[-max(1, keep):]
+    inst["auto_backups"] = final
+    return made
+
+
+def _mod_index(inst):
+    """Installed mods -> [{file, name, ids}] by reading each jar's metadata."""
+    out = []
+    mods = game_dir_of(inst) / "mods"
+    if not mods.is_dir():
+        return out
+    for jar in sorted(mods.glob("*.jar")):
+        ids, name = set(), jar.stem
+        try:
+            with zipfile.ZipFile(jar) as z:
+                names = set(z.namelist())
+                if "fabric.mod.json" in names:
+                    meta = json.loads(z.read("fabric.mod.json").decode("utf-8", "replace"))
+                    ids.add(str(meta.get("id", "")))
+                    name = meta.get("name") or name
+                elif "quilt.mod.json" in names:
+                    meta = json.loads(z.read("quilt.mod.json").decode("utf-8", "replace"))
+                    ql = meta.get("quilt_loader", {})
+                    ids.add(str(ql.get("id", "")))
+                    name = (ql.get("metadata") or {}).get("name") or name
+                for toml in ("META-INF/neoforge.mods.toml", "META-INF/mods.toml"):
+                    if toml in names:
+                        text = z.read(toml).decode("utf-8", "replace")
+                        ids.update(re.findall(r'modId\s*=\s*"([^"]+)"', text))
+                        m = re.search(r'displayName\s*=\s*"([^"]+)"', text)
+                        if m:
+                            name = m.group(1)
+        except (OSError, zipfile.BadZipFile, ValueError, KeyError):
+            pass
+        ids.discard("")
+        out.append({"file": jar.name, "name": str(name), "ids": ids})
+    return out
+
+
+def analyze_crash(inst, text=None):
+    """Read the newest crash report (or latest.log) and say what probably went wrong."""
+    gd = game_dir_of(inst)
+    report = None
+    if text is None:
+        reports = sorted((gd / "crash-reports").glob("crash-*.txt"), key=lambda p: p.stat().st_mtime, reverse=True) \
+            if (gd / "crash-reports").is_dir() else []
+        latest = gd / "logs" / "latest.log"
+        if reports and time.time() - reports[0].stat().st_mtime < 6 * 3600:
+            report = reports[0]
+        elif latest.exists():
+            report = latest
+        if report is not None:
+            text = report.read_text("utf-8", "replace")[-400_000:]
+    text = text or ""
+    low = text.lower()
+    mods = _mod_index(inst)
+    by_id = {i: m for m in mods for i in m["ids"]}
+    issues, suspects = [], {}
+
+    def suspect(mid, reason, weight):
+        m = by_id.get(mid)
+        if not m:
+            return
+        s = suspects.setdefault(m["file"], {"file": m["file"], "name": m["name"], "id": mid, "reasons": [], "score": 0})
+        if reason not in s["reasons"]:
+            s["reasons"].append(reason)
+        s["score"] += weight
+
+    if "outofmemoryerror" in low:
+        issues.append({"kind": "memory", "message": "Minecraft ran out of memory. Give this instance more RAM in its settings."})
+    if "unsupportedclassversionerror" in low or "class file version" in low:
+        issues.append({"kind": "java", "message": "The Java version doesn't match. Leave Java on Automatic in the instance settings."})
+    if "exception in thread \"main\"" in low and "noclassdeffounderror" in low and not suspects:
+        issues.append({"kind": "mods", "message": "A mod is missing a library it needs."})
+
+    for m in re.finditer(r"Mod '([^']+)' \(([^)]+)\)[^\n]*?requires[^\n]*?of mod ([\w\-.]+)([^\n]*)", text):
+        why = "is missing" if "missing" in m.group(4) else "is the wrong version"
+        issues.append({"kind": "dependency", "message": f"{m.group(1)} needs the mod '{m.group(3)}', which {why}."})
+        suspect(m.group(2), f"needs '{m.group(3)}'", 6)
+    for m in re.finditer(r"Mod ID: '([^']+)', Requested by: '([^']+)'[^\n]*?Actual version: '([^']*)'", text):
+        issues.append({"kind": "dependency", "message": f"{m.group(2)} needs the mod '{m.group(1)}' (found: {m.group(3)})."})
+        suspect(m.group(2), f"needs '{m.group(1)}'", 6)
+    for m in re.finditer(r"Suspected Mods?:\s*\n?((?:[^\n]+\n?)+?)(?:\n|\Z)", text):
+        for mid in re.findall(r"\(([\w\-.]+)\)", m.group(1)):
+            suspect(mid, "named as a suspect in the crash report", 8)
+    for m in re.finditer(r"Mixin apply for mod ([\w\-.]+) failed|\[([\w\-.]+?)\.mixins?\.json", text):
+        mid = m.group(1) or m.group(2)
+        for cand in {mid, mid.replace("_", "-"), mid.replace("-", "_")}:
+            suspect(cand, "a mixin from this mod failed", 5)
+
+    trace = [ln for ln in text.splitlines() if ln.lstrip().startswith(("at ", "Caused by", "java.lang", "Description:"))][:250]
+    blob = "\n".join(trace).lower()
+    for mid in by_id:
+        if len(mid) >= 4 and mid not in ("minecraft", "java", "fabric", "forge", "neoforge", "fabricloader"):
+            hits = len(re.findall(r"(?<![\w])" + re.escape(mid.lower().replace("-", "_")) + r"(?![\w])", blob.replace("-", "_")))
+            if hits:
+                suspect(mid, "appears in the error trace", min(4, hits))
+
+    ranked = sorted(suspects.values(), key=lambda s: -s["score"])[:5]
+    for s in ranked:
+        s.pop("score", None)
+        s["reason"] = "; ".join(s.pop("reasons"))
+    if not ranked and not issues:
+        issues.append({"kind": "unknown", "message": "Couldn't pin this on a specific mod. Try turning off recently added mods."})
+    return {"report": str(report) if report else None, "issues": issues[:6], "suspects": ranked}
+
+
+class DiscordPresence:
+    """Minimal Discord Rich Presence over Discord's local IPC. Never raises; shows only the instance and version."""
+
+    def __init__(self, client_id):
+        self.client_id = str(client_id).strip()
+        self.sock = None
+        self.pipe = None
+
+    def _paths(self):
+        if os.name == "nt":
+            return [r"\\?\pipe\discord-ipc-%d" % i for i in range(10)]
+        bases = [os.environ.get(k) for k in ("XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP")] + ["/tmp"]
+        out = []
+        for b in [b for b in bases if b]:
+            for sub in ("", "app/com.discordapp.Discord/", "snap.discord/"):
+                out += [f"{b.rstrip('/')}/{sub}discord-ipc-{i}" for i in range(10)]
+        return out
+
+    def _send(self, op, payload):
+        data = json.dumps(payload).encode()
+        msg = struct.pack("<II", op, len(data)) + data
+        if self.sock:
+            self.sock.sendall(msg)
+        else:
+            self.pipe.write(msg)
+            self.pipe.flush()
+
+    def _recv(self):
+        def read(n):
+            if self.sock:
+                buf = b""
+                while len(buf) < n:
+                    chunk = self.sock.recv(n - len(buf))
+                    if not chunk:
+                        raise IOError("closed")
+                    buf += chunk
+                return buf
+            return self.pipe.read(n)
+        op, n = struct.unpack("<II", read(8))
+        return op, json.loads(read(n).decode() or "{}")
+
+    def connect(self):
+        import socket
+        for path in self._paths():
+            try:
+                if os.name == "nt":
+                    self.pipe = open(path, "r+b", buffering=0)
+                else:
+                    if not os.path.exists(path):
+                        continue
+                    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    s.settimeout(3)
+                    s.connect(path)
+                    self.sock = s
+                self._send(0, {"v": 1, "client_id": self.client_id})
+                self._recv()
+                return True
+            except (OSError, ValueError, struct.error):
+                self.close()
+        return False
+
+    def set(self, details, state, start):
+        try:
+            self._send(1, {"cmd": "SET_ACTIVITY", "nonce": str(uuid.uuid4()),
+                           "args": {"pid": os.getpid(), "activity": {
+                               "details": details[:120], "state": state[:120], "timestamps": {"start": int(start)}}}})
+            self._recv()
+        except (OSError, ValueError, struct.error, AttributeError):
+            pass
+
+    def close(self):
+        for h in (self.sock, self.pipe):
+            try:
+                if h:
+                    h.close()
+            except OSError:
+                pass
+        self.sock = self.pipe = None
+
+
+def cli_servers(iid):
+    cli_emit(type="servers", servers=list_servers(cli_inst(iid)))
+
+
+def cli_crash_analyze(iid):
+    inst = cli_inst(iid)
+    cli_emit(type="crash_analysis", **analyze_crash(inst))
+
+
+def cli_launch(iid, account_key=None, server=None):
     inst = load_json(INSTANCES / iid / "instance.json", None)
     if not inst:
         raise IOError("That instance no longer exists.")
@@ -7028,7 +7530,17 @@ def cli_launch(iid, account_key=None):
         acct = auth.minecraft_account(auth.refresh(acct["refresh_token"]))
         cli_save_account(acct, make_current=False)
     cli_emit(type="phase", phase="preparing")
+    cfg_now = load_json(CONFIG, {})
+    if cfg_now.get("auto_backup", True):
+        try:
+            auto_backup_worlds(inst, cli_log, keep=int(cfg_now.get("backups_keep", 3)))
+            save_instance(inst)
+        except Exception as e:  # noqa: BLE001  (a failed backup must never stop you playing)
+            cli_log(f"WARNING: automatic backup skipped: {e}")
     cmd, game_dir = Core(cli_log, cli_progress).prepare(inst, acct)
+    if server:
+        cmd = list(cmd) + quick_play_args(inst["version"], server)
+        cli_log(f"Joining {server} on launch…")
     try:
         sync_cursor_mod(inst, load_json(CONFIG, {}).get("cursor_scope") == "minecraft", cli_log)
     except Exception as e:  # noqa: BLE001
@@ -7044,9 +7556,21 @@ def cli_launch(iid, account_key=None):
     except (ValueError, OSError, AttributeError):
         pass
     t0 = time.time()
+    rpc = None
+    if cfg_now.get("presence") and cfg_now.get("discord_client_id"):
+        try:
+            rpc = DiscordPresence(cfg_now["discord_client_id"])
+            if rpc.connect():
+                rpc.set(f"Playing {inst['name']}", f"Minecraft {inst['version']} · {loader_label(inst)}", t0)
+            else:
+                rpc = None
+        except Exception:  # noqa: BLE001
+            rpc = None
     for line in proc.stdout:
         cli_emit(type="game", line=line.rstrip())
     code = proc.wait()
+    if rpc:
+        rpc.close()
     fresh = load_json(INSTANCES / iid / "instance.json", None) or inst
     fresh["playtime_s"] = int(fresh.get("playtime_s", 0)) + int(time.time() - t0)
     fresh["last_played"] = int(time.time())
@@ -7261,8 +7785,8 @@ def cli_skin_save(name, slim, png_path, sid):
     cli_emit(type="library", skins=cli_skin_lib())
 
 
-def cli_mod_updates(iid):
-    inst = cli_inst(iid)
+def find_mod_updates(inst):
+    """-> (list of {id,title,current,latest}, number of tracked Modrinth mods)."""
     mc, loader = inst["version"], loader_of(inst)
     tracked = {p: f for p, f in inst.get("mods", {}).items() if not str(p).startswith("cf:")}
     out = []
@@ -7286,17 +7810,26 @@ def cli_mod_updates(iid):
         f = next((x for x in pick["files"] if x.get("primary")), pick["files"][0])
         if f["filename"] != cur:
             out.append({"id": pid, "title": titles.get(pid, pid), "current": cur, "latest": f["filename"]})
-    cli_emit(type="mod_updates", updates=out, checked=len(tracked))
+    return out, len(tracked)
 
 
-def cli_mod_update(iid, only):
-    inst = cli_inst(iid)
+def apply_mod_updates(inst, only, log):
     mods_dir = game_dir_of(inst) / "mods"
     tracked = inst.setdefault("mods", {})
     seen = set()
     for pid in (only or [p for p in list(tracked) if not str(p).startswith("cf:")]):
-        install_project(inst["version"], pid, mods_dir, tracked, cli_log, seen, loader_of(inst))
+        install_project(inst["version"], pid, mods_dir, tracked, log, seen, loader_of(inst))
     save_instance(inst)
+
+
+def cli_mod_updates(iid):
+    out, n = find_mod_updates(cli_inst(iid))
+    cli_emit(type="mod_updates", updates=out, checked=n)
+
+
+def cli_mod_update(iid, only):
+    inst = cli_inst(iid)
+    apply_mod_updates(inst, only, cli_log)
     cli_emit(type="instance", instance=cli_instance_dict(load_json(INSTANCES / iid / "instance.json", inst)))
 
 
@@ -7321,6 +7854,18 @@ def cli_main(argv):
     p = sub.add_parser("launch")
     p.add_argument("id")
     p.add_argument("--account")
+    p.add_argument("--server")
+    p = sub.add_parser("servers")
+    p.add_argument("id")
+    p = sub.add_parser("server-add")
+    p.add_argument("id")
+    p.add_argument("--name", default="")
+    p.add_argument("--ip", required=True)
+    p = sub.add_parser("server-remove")
+    p.add_argument("id")
+    p.add_argument("--ip", required=True)
+    p = sub.add_parser("crash-analyze")
+    p.add_argument("id")
     p = sub.add_parser("create")
     p.add_argument("--name", required=True)
     p.add_argument("--version", required=True)
@@ -7348,6 +7893,8 @@ def cli_main(argv):
     p.add_argument("--icon")
     p.add_argument("--java")
     p.add_argument("--jvm")
+    p.add_argument("--favorite", choices=("on", "off"))
+    p.add_argument("--group")
     p = sub.add_parser("mods-check")
     p.add_argument("id")
     p = sub.add_parser("mods-update")
@@ -7405,6 +7952,10 @@ def cli_main(argv):
     p.add_argument("--splash", choices=("on", "off"))
     p.add_argument("--outro", choices=("on", "off"))
     p.add_argument("--glass", choices=("on", "off"))
+    p.add_argument("--auto-backup", dest="auto_backup", choices=("on", "off"))
+    p.add_argument("--backups-keep", dest="backups_keep", type=int)
+    p.add_argument("--presence", choices=("on", "off"))
+    p.add_argument("--discord-id", dest="discord_id")
     p = sub.add_parser("set-key")
     p.add_argument("key")
     a = ap.parse_args(argv)
@@ -7416,7 +7967,17 @@ def cli_main(argv):
         elif a.cmd == "login":
             cli_login()
         elif a.cmd == "launch":
-            cli_launch(a.id, a.account)
+            cli_launch(a.id, a.account, a.server)
+        elif a.cmd == "servers":
+            cli_servers(a.id)
+        elif a.cmd == "server-add":
+            add_server(cli_inst(a.id), a.name, a.ip)
+            cli_servers(a.id)
+        elif a.cmd == "server-remove":
+            remove_server(cli_inst(a.id), a.ip)
+            cli_servers(a.id)
+        elif a.cmd == "crash-analyze":
+            cli_crash_analyze(a.id)
         elif a.cmd == "create":
             cli_create(a.name.strip(), a.version, a.loader, a.boost)
         elif a.cmd == "delete":
@@ -7466,6 +8027,10 @@ def cli_main(argv):
                 inst["java"] = a.java.strip()
             if a.jvm is not None:
                 inst["jvm_args"] = a.jvm.strip()
+            if a.favorite:
+                inst["favorite"] = a.favorite == "on"
+            if a.group is not None:
+                inst["group"] = a.group.strip()[:40]
             if a.icon:
                 src = Path(a.icon)
                 if src.suffix.lower() not in (".png", ".gif") or not src.is_file():
@@ -7559,6 +8124,17 @@ def cli_main(argv):
                 cfg["outro"] = a.outro == "on"
             if a.glass:
                 cfg["liquid_glass"] = a.glass == "on"
+            if a.auto_backup:
+                cfg["auto_backup"] = a.auto_backup == "on"
+            if a.backups_keep:
+                cfg["backups_keep"] = max(1, min(20, a.backups_keep))
+            if a.presence:
+                cfg["presence"] = a.presence == "on"
+            if a.discord_id is not None:
+                did = a.discord_id.strip()
+                if did and not did.isdigit():
+                    raise IOError("A Discord application ID is a number.")
+                cfg["discord_client_id"] = did
             save_json(CONFIG, cfg, private=True)
         elif a.cmd == "mods-check":
             cli_mod_updates(a.id)

@@ -15,6 +15,8 @@ struct Instance: Identifiable, Hashable {
     var perf: Bool
     var java: String
     var jvmArgs: String
+    var favorite: Bool
+    var group: String
 
     init(_ d: [String: Any]) {
         id = d["id"] as? String ?? UUID().uuidString
@@ -30,6 +32,8 @@ struct Instance: Identifiable, Hashable {
         perf = (d["perf"] as? NSNumber)?.boolValue ?? false
         java = d["java"] as? String ?? ""
         jvmArgs = d["jvm_args"] as? String ?? ""
+        favorite = (d["favorite"] as? NSNumber)?.boolValue ?? false
+        group = d["group"] as? String ?? ""
     }
 
     var playtimeText: String {
@@ -225,8 +229,42 @@ enum InstanceSort: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+struct SidebarSection {
+    let title: String
+    let items: [Instance]
+}
+
+struct ServerEntry: Identifiable, Hashable {
+    var id: String { ip }
+    let name: String
+    let ip: String
+    init(_ d: [String: Any]) {
+        ip = d["ip"] as? String ?? ""
+        let n = d["name"] as? String ?? ""
+        name = n.isEmpty ? ip : n
+    }
+}
+
+struct CrashSuspect: Identifiable, Hashable {
+    var id: String { file }
+    let file: String
+    let name: String
+    let reason: String
+    init(_ d: [String: Any]) {
+        file = d["file"] as? String ?? ""
+        name = d["name"] as? String ?? file
+        reason = d["reason"] as? String ?? ""
+    }
+}
+
+struct CrashAnalysis {
+    var issues: [String]
+    var suspects: [CrashSuspect]
+    var report: String?
+}
+
 enum InstTab: String, CaseIterable, Identifiable {
-    case overview = "Overview", mods = "Mods", packs = "Resource packs", shaders = "Shaders", datapacks = "Datapacks"
+    case overview = "Overview", mods = "Mods", packs = "Resource packs", shaders = "Shaders", datapacks = "Datapacks", servers = "Servers"
     case worlds = "Worlds", screenshots = "Screenshots"
     var id: String { rawValue }
 }
@@ -280,6 +318,13 @@ final class Store: ObservableObject {
     @Published var instanceQuery = ""
     @Published var instanceSort: InstanceSort = .name
     @Published var crash: CrashInfo?
+    @Published var analysis: CrashAnalysis?
+    @Published var servers: [ServerEntry] = []
+    @Published var autoBackup = true
+    @Published var backupsKeep = 3
+    @Published var presenceOn = false
+    @Published var discordSet = false
+    private var launchingID = ""
     @Published var modUpdates: [ModUpdate] = []
     @Published var modCheckDone = false
     @Published var checkingUpdates = false
@@ -312,7 +357,20 @@ final class Store: ObservableObject {
         case .recent: list.sort { $0.lastPlayed > $1.lastPlayed }
         case .played: list.sort { $0.playtime > $1.playtime }
         }
-        return list
+        return list.filter { $0.favorite } + list.filter { !$0.favorite }
+    }
+
+    var sidebarSections: [SidebarSection] {
+        let list = visibleInstances
+        let groups = Set(list.map { $0.group }.filter { !$0.isEmpty })
+        if groups.isEmpty { return [SidebarSection(title: "", items: list)] }
+        var out: [SidebarSection] = []
+        let loose = list.filter { $0.group.isEmpty }
+        if !loose.isEmpty { out.append(SidebarSection(title: "", items: loose)) }
+        for g in groups.sorted(by: { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }) {
+            out.append(SidebarSection(title: g, items: list.filter { $0.group == g }))
+        }
+        return out
     }
 
     var selected: Instance? { instances.first { $0.id == selectedID } ?? instances.first }
@@ -339,6 +397,10 @@ final class Store: ObservableObject {
                 liquidGlass = s.raw["glass"] as? Bool ?? true
                 Palette.glassOn = liquidGlass
                 outroEnabled = s.raw["outro"] as? Bool ?? true
+                autoBackup = s.raw["auto_backup"] as? Bool ?? true
+                backupsKeep = (s.raw["backups_keep"] as? NSNumber)?.intValue ?? 3
+                presenceOn = s.raw["presence"] as? Bool ?? false
+                discordSet = s.raw["discord_id"] as? Bool ?? false
                 if !splashEnabled { introActive = false }
                 if selected == nil || !instances.contains(where: { $0.id == selectedID }) {
                     selectedID = instances.first?.id
@@ -351,13 +413,15 @@ final class Store: ObservableObject {
 
     // MARK: playing
 
-    func play(_ inst: Instance) {
+    func play(_ inst: Instance, server: String? = nil) {
         guard !running else { return }
         guard account != nil else { startSignIn(); return }
         running = true
         stopRequested = false
         lastExit = 0
         launchingName = inst.name
+        launchingID = inst.id
+        analysis = nil
         requestNotifications()
         phase = "Preparing…"
         progress = nil
@@ -365,6 +429,7 @@ final class Store: ObservableObject {
         append("Starting \(inst.name)…")
         var args = ["launch", inst.id]
         if let key = account?.id { args += ["--account", key] }
+        if let server, !server.isEmpty { args += ["--server", server] }
         do {
             launchHandle = try core.spawn(args, onEvent: { [weak self] e in self?.handleLaunch(e) },
                                           onExit: { [weak self] _ in self?.finishLaunch() })
@@ -401,6 +466,8 @@ final class Store: ObservableObject {
         let name = launchingName, code = lastExit
         if code != 0 && !stopRequested && phase != "" {
             crash = CrashInfo(name: name, code: code, tail: Array(console.suffix(80)))
+            let id = launchingID
+            Task { await analyzeCrash(id) }
         }
         notify(title: code != 0 && !stopRequested ? "\(name) crashed" : "\(name) closed",
                body: code != 0 && !stopRequested ? "Open Spectra to see what happened." : "Thanks for playing.")
@@ -903,5 +970,103 @@ extension Store {
         c.title = title
         c.body = body
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil))
+    }
+}
+
+
+// MARK: - Servers, crash analysis, favorites, backups, Discord
+
+extension Store {
+    func loadServers(_ inst: Instance) async {
+        do {
+            let ev = try await core.call(["servers", inst.id])
+            servers = (ev.first(where: { $0.type == "servers" })?.list("servers") ?? []).map(ServerEntry.init)
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    func addServer(_ inst: Instance, name: String, ip: String) async {
+        do {
+            let ev = try await core.call(["server-add", inst.id, "--name", name, "--ip", ip])
+            servers = (ev.first(where: { $0.type == "servers" })?.list("servers") ?? []).map(ServerEntry.init)
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    func removeServer(_ inst: Instance, _ s: ServerEntry) async {
+        do {
+            let ev = try await core.call(["server-remove", inst.id, "--ip", s.ip])
+            servers = (ev.first(where: { $0.type == "servers" })?.list("servers") ?? []).map(ServerEntry.init)
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    func analyzeCrash(_ id: String) async {
+        guard !id.isEmpty else { return }
+        do {
+            let ev = try await core.call(["crash-analyze", id])
+            guard let e = ev.first(where: { $0.type == "crash_analysis" }) else { return }
+            let issues = e.list("issues").compactMap { $0["message"] as? String }
+            analysis = CrashAnalysis(issues: issues, suspects: e.list("suspects").map(CrashSuspect.init),
+                                     report: e.raw["report"] as? String)
+        } catch { /* the plain crash card still shows */ }
+    }
+
+    func disableSuspect(_ s: CrashSuspect) {
+        let id = launchingID
+        Task {
+            do {
+                _ = try await core.call(["content-toggle", id, "--kind", "mods", "--file", s.file])
+                analysis?.suspects.removeAll { $0.file == s.file }
+                refresh()
+            } catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func setFavorite(_ inst: Instance, _ on: Bool) {
+        Task {
+            _ = try? await core.call(["update", inst.id, "--favorite", on ? "on" : "off"])
+            refresh()
+        }
+    }
+
+    func setGroup(_ inst: Instance, _ name: String) {
+        Task {
+            _ = try? await core.call(["update", inst.id, "--group", name])
+            refresh()
+        }
+    }
+
+    func askGroup(_ inst: Instance) {
+        let a = NSAlert()
+        a.messageText = "Group for “\(inst.name)”"
+        a.informativeText = "Instances with the same group name are listed together in the sidebar. Leave empty to remove it from its group."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = inst.group
+        a.accessoryView = field
+        a.addButton(withTitle: "Save")
+        a.addButton(withTitle: "Cancel")
+        if a.runModal() == .alertFirstButtonReturn { setGroup(inst, field.stringValue) }
+    }
+
+    func setAutoBackup(_ on: Bool) {
+        autoBackup = on
+        Task { _ = try? await core.call(["pref-set", "--auto-backup", on ? "on" : "off"]) }
+    }
+
+    func setBackupsKeep(_ n: Int) {
+        backupsKeep = n
+        Task { _ = try? await core.call(["pref-set", "--backups-keep", String(n)]) }
+    }
+
+    func setPresence(_ on: Bool) {
+        presenceOn = on
+        Task { _ = try? await core.call(["pref-set", "--presence", on ? "on" : "off"]) }
+    }
+
+    func setDiscordID(_ id: String) {
+        Task {
+            do {
+                _ = try await core.call(["pref-set", "--discord-id", id])
+                discordSet = !id.trimmingCharacters(in: .whitespaces).isEmpty
+            } catch { errorMessage = error.localizedDescription }
+        }
     }
 }

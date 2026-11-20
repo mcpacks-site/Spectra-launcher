@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
+"""Spectra update signing (Ed25519, your own key — nothing to do with Apple).
 
+  python3 tools/updatekey.py gen  <private.key> <update-public.key>
+  python3 tools/updatekey.py sign <private.key> <version> <zip> <url> <out latest.json> [notes]
+
+Needs:  pip install cryptography
+Keep private.key secret (add its contents as the GitHub secret SPECTRA_UPDATE_KEY). The public
+key is safe to commit; the Updater only accepts updates signed by the matching private key.
+"""
 import sys, json, base64, hashlib
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization as S
