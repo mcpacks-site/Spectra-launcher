@@ -318,6 +318,7 @@ final class Store: ObservableObject {
     @Published var instanceQuery = ""
     @Published var instanceSort: InstanceSort = .name
     @Published var crash: CrashInfo?
+    @Published var pendingLaunch: PendingLaunch?
     @Published var analysis: CrashAnalysis?
     @Published var servers: [ServerEntry] = []
     @Published var autoBackup = true
@@ -385,7 +386,12 @@ final class Store: ObservableObject {
                 guard let s = events.first(where: { $0.type == "state" }) else { return }
                 instances = s.list("instances").map(Instance.init)
                 accounts = s.list("accounts").map(Account.init)
-                currentAccount = s.raw["account"] as? String
+                let coreAccount = s.raw["account"] as? String
+                if let saved = UserDefaults.standard.string(forKey: "spectra.account"), accounts.contains(where: { $0.id == saved }) {
+                    currentAccount = saved
+                } else {
+                    currentAccount = coreAccount
+                }
                 hasCurseForgeKey = s.bool("curseforge_key")
                 root = s.str("root")
                 let acc = s.str("accent").isEmpty ? "green" : s.str("accent")
@@ -413,7 +419,21 @@ final class Store: ObservableObject {
 
     // MARK: playing
 
+    /// Entry point for every Play button: look for problems first, then start.
     func play(_ inst: Instance, server: String? = nil) {
+        guard !running else { return }
+        guard account != nil else { startSignIn(); return }
+        Task {
+            let found = await fetchChecks(inst)
+            if found.contains(where: { $0.level != "info" }) {
+                pendingLaunch = PendingLaunch(inst: inst, server: server, checks: found)
+            } else {
+                startPlay(inst, server: server)
+            }
+        }
+    }
+
+    func startPlay(_ inst: Instance, server: String? = nil) {
         guard !running else { return }
         guard account != nil else { startSignIn(); return }
         running = true

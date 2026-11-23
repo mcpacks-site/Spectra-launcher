@@ -65,9 +65,9 @@ user this and have a button that opens that page. (Whether macOS prompts depends
 signing, so this path is the part most worth testing on a clean Mac.)
 
 ## Notes
-- Unsigned and not notarized: the first time someone opens the **Installer** on another Mac they must
-  right-click > Open. Apps the Installer places don't carry the download quarantine, so Spectra itself opens normally.
-- Updating the Updater itself: re-run the newest Installer.
+- Unsigned and not notarized: the first time someone opens the **Installer** macOS blocks it. On macOS 15 and later
+  they go to System Settings > Privacy & Security > Security and click **Open Anyway** (right-click > Open no longer works there). Apps the Installer places don't carry the download quarantine, so Spectra itself opens normally.
+- The Updater updates itself: each release's signed `latest.json` also carries the newest Updater (`Spectra-Updater-app.zip`), which it verifies, swaps in and reopens before checking for Spectra updates.
 - CurseForge needs your own free API key (Settings), stored locally only.
 - Packs whose authors blocked third-party downloads open their CurseForge page instead of installing.
 
@@ -78,3 +78,8 @@ signing, so this path is the part most worth testing on a clean Mac.)
 - **Favorites and groups** in the sidebar (hero "…" menu).
 - **Discord Rich Presence** (Settings): needs your own free Discord application ID.
 - Java is downloaded automatically for each Minecraft version (nothing to set up).
+- **Launch checks** before Play: wrong Java, too much or too little memory, duplicate mods, a missing Fabric API, mods built for another Minecraft version, low disk, each with a one-click fix.
+- **Support file** (hero "…" menu and the crash card): a zip with logs, settings and mod list for asking for help. Tokens and your player name are removed; it never includes accounts.
+- **Mod list sharing**: copy a short code (or save a file) with just the mods, and a friend imports it from the import menu.
+- **Account switcher**: click the account chip to pick between signed-in accounts.
+- **Voice chat mods** (Simple Voice Chat etc.): the app now declares microphone access so macOS can ask for permission.

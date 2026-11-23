@@ -23,6 +23,7 @@ mkdir -p "$OUT"
 SWIFT_EXTRA=""
 SUFFIX=""
 ZIPREL="Spectra-app.zip"
+UPDZIPREL="Spectra-Updater-app.zip"
 MANIFEST="latest.json"
 
 # Apple Silicon only by default (macOS 26+ and Liquid Glass are for Apple Silicon Macs).
@@ -33,6 +34,7 @@ if [ "$ARCH_TAG" = "intel" ]; then
   SWIFT_EXTRA="-Xswiftc -DINTEL --scratch-path .build-intel"
   SUFFIX="-Intel"
   ZIPREL="Spectra-app-intel.zip"
+  UPDZIPREL="Spectra-Updater-app-intel.zip"
   MANIFEST="latest-intel.json"
 elif [ "${UNIVERSAL:-0}" = "1" ]; then
   SWIFT_ARCHS="--arch arm64 --arch x86_64"
@@ -98,6 +100,14 @@ make_bundle() {
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
   cp "$BINDIR/$exe" "$app/Contents/MacOS/$exe"
   cp "$ICON_ICNS" "$app/Contents/Resources/AppIcon.icns"
+  # Only the launcher itself hosts the game, so only it declares device access. Without these keys
+  # macOS never shows the permission prompt and mods like Simple Voice Chat report
+  # "Your launcher does not support macOS microphone permissions".
+  local privacy=""
+  if [ "$bid" = "site.mcpacks.spectra.mac" ]; then
+    privacy='  <key>NSMicrophoneUsageDescription</key><string>Minecraft mods such as Simple Voice Chat use the microphone for in-game voice chat.</string>
+  <key>NSCameraUsageDescription</key><string>Minecraft mods can use the camera if you enable them to.</string>'
+  fi
   cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -113,6 +123,7 @@ make_bundle() {
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
+$privacy
 </dict></plist>
 PLIST
 }
@@ -212,11 +223,14 @@ rm -rf "$STAGE"
 # --- final names in build/ ----------------------------------------------------------------------
 cp "$OUT/Spectra-Installer.dmg" "build/Spectra-Installer$SUFFIX.dmg"
 cp "$OUT/Spectra-app.zip" "build/$ZIPREL"
+cp "$OUT/Spectra-Updater-app.zip" "build/$UPDZIPREL"
 
 # --- signed update manifest (release builds) -------------------------------------------------------
 if [ -n "${SPECTRA_UPDATE_KEY_FILE:-}" ] && [ -n "${RELEASE_TAG:-}" ]; then
   URL="https://github.com/mcpacks-site/Spectra-launcher/releases/download/$RELEASE_TAG/$ZIPREL"
-  python3 tools/updatekey.py sign "$SPECTRA_UPDATE_KEY_FILE" "$VERSION" "build/$ZIPREL" "$URL" "build/$MANIFEST" "${RELEASE_NOTES:-}"
+  UPDURL="https://github.com/mcpacks-site/Spectra-launcher/releases/download/$RELEASE_TAG/$UPDZIPREL"
+  python3 tools/updatekey.py sign "$SPECTRA_UPDATE_KEY_FILE" "$VERSION" "build/$ZIPREL" "$URL" "build/$MANIFEST" "${RELEASE_NOTES:-}" \
+    --updater "$VERSION" "build/$UPDZIPREL" "$UPDURL"
 fi
 
 echo

@@ -3,6 +3,7 @@
 
   python3 tools/updatekey.py gen  <private.key> <update-public.key>
   python3 tools/updatekey.py sign <private.key> <version> <zip> <url> <out latest.json> [notes]
+                                  [--updater <version> <updater zip> <updater url>]
 
 Needs:  pip install cryptography
 Keep private.key secret (add its contents as the GitHub secret SPECTRA_UPDATE_KEY). The public
@@ -17,6 +18,9 @@ def raw_pub(k):   return k.public_key().public_bytes(S.Encoding.Raw, S.PublicFor
 
 def message(version, sha256, url):          # must match SpectraShared/Manifest.swift
     return f"spectra-update\n{version}\n{sha256}\n{url}".encode()
+
+def updater_message(version, sha256, url):  # must match SpectraShared UpdaterInfo.signedMessage
+    return f"spectra-updater\n{version}\n{sha256}\n{url}".encode()
 
 def sha256_file(path):
     h = hashlib.sha256()
@@ -35,13 +39,26 @@ def main(a):
         open(a[3], "w").write(base64.b64encode(raw_pub(k)).decode() + "\n")
         print(f"Wrote {a[2]} (SECRET) and {a[3]} (public, commit it).")
     elif len(a) >= 7 and a[1] == "sign":
-        key, version, zp, url, out = load(a[2]), a[3], a[4], a[5], a[6]
-        notes = a[7] if len(a) > 7 else ""
+        rest = a[:]
+        upd = None
+        if "--updater" in rest:
+            i = rest.index("--updater")
+            upd = rest[i + 1:i + 4]
+            rest = rest[:i]
+            if len(upd) != 3:
+                print(__doc__); sys.exit(1)
+        key, version, zp, url, out = load(rest[2]), rest[3], rest[4], rest[5], rest[6]
+        notes = rest[7] if len(rest) > 7 else ""
         digest = sha256_file(zp)
         sig = base64.b64encode(key.sign(message(version, digest, url))).decode()
-        json.dump({"version": version, "notes": notes, "url": url, "sha256": digest, "sig": sig},
-                  open(out, "w"), indent=2)
-        print(f"Wrote {out} for {version}")
+        data = {"version": version, "notes": notes, "url": url, "sha256": digest, "sig": sig}
+        if upd:
+            uv, uz, uu = upd
+            ud = sha256_file(uz)
+            data["updater"] = {"version": uv, "url": uu, "sha256": ud,
+                               "sig": base64.b64encode(key.sign(updater_message(uv, ud, uu))).decode()}
+        json.dump(data, open(out, "w"), indent=2)
+        print(f"Wrote {out} for {version}" + (f" (+ updater {upd[0]})" if upd else ""))
     else:
         print(__doc__); sys.exit(1)
 

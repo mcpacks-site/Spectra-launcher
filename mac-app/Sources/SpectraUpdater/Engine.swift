@@ -98,6 +98,7 @@ final class UpdateModel: ObservableObject {
             let m = try UpdateManifest.decode(data)
             try m.verify(publicKeyBase64: UpdateKey.publicKey)      // never show notes from an unsigned manifest
             manifest = m
+            if await selfUpdateIfNeeded(m) { return }
             let current = installedVersion.flatMap(SemVer.init) ?? SemVer("0")!
             if let latest = SemVer(m.version), latest > current {
                 state = .available(version: m.version, notes: m.notes ?? "")
@@ -106,6 +107,46 @@ final class UpdateModel: ObservableObject {
             }
         } catch {
             state = .failed(Self.message(error))
+        }
+    }
+
+    // MARK: updating the updater itself
+
+    /// If the signed manifest carries a newer Updater, swap this app for it and reopen. Returns true when it
+    /// is relaunching (the caller should stop). Any problem here is non-fatal: we just carry on with this version.
+    private func selfUpdateIfNeeded(_ m: UpdateManifest) async -> Bool {
+        guard let info = m.updater else { return false }
+        let own = Bundle.main.bundleURL
+        guard own.pathExtension == "app",
+              let ownVer = Locate.version(of: own).flatMap(SemVer.init),
+              let newVer = SemVer(info.version), newVer > ownVer else { return false }
+        var cleanup: [URL] = []
+        defer { cleanup.forEach { try? FileManager.default.removeItem(at: $0) } }
+        do {
+            try info.verify(publicKeyBase64: UpdateKey.publicKey)
+            guard let url = info.downloadURL else { return false }
+            state = .installing("Updating the updater…")
+            let zip = try await Downloader { _ in }.download(url)
+            cleanup.append(zip)
+            guard try sha256Hex(of: zip) == info.sha256.lowercased() else { return false }
+            let work = try FileManager.default.url(for: .itemReplacementDirectory, in: .userDomainMask,
+                                                   appropriateFor: own, create: true)
+            cleanup.append(work)
+            try unzipApp(zip, into: work)
+            let fresh = work.appendingPathComponent(SpectraIDs.updaterFolderName)
+            guard Locate.bundleID(of: fresh) == SpectraIDs.updater,
+                  Locate.version(of: fresh) == info.version else { return false }
+            let replaced = try FileManager.default.replaceItemAt(own, withItemAt: fresh) ?? own
+            clearQuarantine(replaced)
+            let cfg = NSWorkspace.OpenConfiguration()
+            cfg.createsNewApplicationInstance = true
+            state = .installing("Restarting the updater…")
+            NSWorkspace.shared.openApplication(at: replaced, configuration: cfg) { _, _ in
+                DispatchQueue.main.async { NSApp.terminate(nil) }
+            }
+            return true
+        } catch {
+            return false    // couldn't write here or no network blip: keep going with the current updater
         }
     }
 

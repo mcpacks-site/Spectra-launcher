@@ -72,12 +72,41 @@ public enum UpdateError: LocalizedError {
     }
 }
 
+/// The Updater's own new version, signed separately so the Updater can replace itself.
+public struct UpdaterInfo: Decodable {
+    public let version: String
+    public let url: String
+    public let sha256: String
+    public let sig: String
+
+    public var signedMessage: Data {
+        Data("spectra-updater\n\(version)\n\(sha256.lowercased())\n\(url)".utf8)
+    }
+
+    public var downloadURL: URL? {
+        guard url.hasPrefix(SpectraIDs.allowedDownloadPrefix) else { return nil }
+        return URL(string: url)
+    }
+
+    public func verify(publicKeyBase64: String) throws {
+        guard let keyData = Data(base64Encoded: publicKeyBase64.trimmingCharacters(in: .whitespacesAndNewlines)),
+              keyData.count == 32,
+              let key = try? Curve25519.Signing.PublicKey(rawRepresentation: keyData) else { throw UpdateError.noKey }
+        guard downloadURL != nil else { throw UpdateError.badURL }
+        guard SemVer(version) != nil else { throw UpdateError.badManifest }
+        guard let sigData = Data(base64Encoded: sig), key.isValidSignature(sigData, for: signedMessage) else {
+            throw UpdateError.badSignature
+        }
+    }
+}
+
 public struct UpdateManifest: Decodable {
     public let version: String
     public let notes: String?
     public let url: String
     public let sha256: String
     public let sig: String
+    public let updater: UpdaterInfo?
 
     public static func decode(_ data: Data) throws -> UpdateManifest {
         do { return try JSONDecoder().decode(UpdateManifest.self, from: data) } catch { throw UpdateError.badManifest }

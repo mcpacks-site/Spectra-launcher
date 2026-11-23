@@ -1234,8 +1234,11 @@ class Core:
                     self.progress(done, total, label)
 
     def ensure_java(self, required, user_path):
-        def fits(m):
+        def fits(m):                       # what a Java *you* pick is allowed to be
             return bool(m) and (m == 8 if required <= 8 else m >= required)
+
+        def exact(m):                      # what Spectra picks by itself: the version Minecraft was built for
+            return bool(m) and m == required
         if user_path:
             m = java_major(user_path)
             if fits(m):
@@ -1244,7 +1247,7 @@ class Core:
         managed = RUNTIME / str(required)
         if managed.exists():
             j = find_java_in(managed)
-            if j and fits(java_major(j)):
+            if j and exact(java_major(j)):
                 return str(j)
         cands = []
         if os.environ.get("JAVA_HOME"):
@@ -1253,8 +1256,10 @@ class Core:
         if w:
             cands.append(w)
         for c in cands:
-            if fits(java_major(c)):
+            if exact(java_major(c)):
                 return str(c)
+        # A newer Java on the system (say 25 for a game built for 21) can break mods and graphics, so
+        # download the matching runtime instead of using it.
         return self.download_java(required, managed)
 
     def download_java(self, major, dest: Path):
@@ -2437,6 +2442,7 @@ class EditInstanceDialog(Dialog):
             self.builders.append(("shader", "Shaders", lambda p: ContentTab(p, self, "shader")))
         self.builders += [("datapack", "Datapacks", lambda p: ContentTab(p, self, "datapack")),
                           ("worlds", "Worlds", lambda p: WorldsTab(p, self)),
+                          ("servers", "Servers", lambda p: ServersTab(p, self)),
                           ("screenshots", "Screenshots", lambda p: ScreenshotsTab(p, self))]
         self.frames = [None] * len(self.builders)
         self.tabs = Tabs(self, [b[1] for b in self.builders], self.switch)
@@ -2879,6 +2885,8 @@ class InstanceList(tk.Canvas):
                            anchor="w", fill=C["muted"], font=font(8))
             if sel and self.app.busy:
                 cv.create_oval(w - 26, y + 24, w - 18, y + 32, fill=C["accent"], outline="")
+            elif inst.get("favorite"):
+                cv.create_text(w - 22, y + 29, text="\u2605", fill=C["accent"], font=font(10))
             self.hit.append((8, y, w - 8, y + self.RH, iid))
             y += self.RH + self.GAP
         cv.configure(scrollregion=(0, 0, w, max(y + 4, cv.winfo_height())))
@@ -5182,6 +5190,132 @@ class WorldsTab(tk.Frame):
             self.reload()
 
 
+class ServersTab(tk.Frame):
+    """Servers saved in the game's own multiplayer list, with one-click join."""
+
+    def __init__(self, parent, dlg):
+        super().__init__(parent, bg=C["panel"])
+        self.dlg, self.app, self.inst = dlg, dlg.app, dlg.inst
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        field_label(self, "Servers").grid(row=0, column=0, sticky="w", pady=(0, 8))
+        box, self.tree = tree_box(self, ("name", "ip"), ("NAME", "ADDRESS"), (260, 300), "ip")
+        box.grid(row=1, column=0, sticky="nsew")
+        bar = tk.Frame(self, bg=C["panel"])
+        bar.grid(row=2, column=0, sticky="w", pady=(10, 0))
+        Btn(bar, "Join", self.join, "primary", h=36).pack(side="left")
+        Btn(bar, "Add", self.add, "secondary", h=36).pack(side="left", padx=8)
+        Btn(bar, "Remove", self.remove, "danger", h=36).pack(side="left")
+        self.msg = lbl(self, "These are the same servers the game's Multiplayer screen shows. Join starts the game "
+                             "and connects straight away.", 9, color=C["muted"])
+        self.msg.grid(row=3, column=0, sticky="w", pady=(14, 0))
+        self.reload()
+
+    def reload(self):
+        self.tree.delete(*self.tree.get_children())
+        try:
+            for sv in list_servers(self.inst):
+                self.tree.insert("", "end", iid=sv["ip"], values=(sv["name"], sv["ip"]))
+        except Exception as e:  # noqa: BLE001
+            self.msg.config(text=f"Couldn't read the server list: {e}")
+
+    def join(self):
+        sel = self.tree.selection()
+        if not sel:
+            self.msg.config(text="Select a server first.")
+            return
+        ip = sel[0]
+        self.dlg.destroy()
+        self.app.launch(self.inst["id"], server=ip)
+
+    def add(self):
+        name = simpledialog.askstring("Add server", "Name (optional):", parent=self.dlg)
+        if name is None:
+            return
+        ip = simpledialog.askstring("Add server", "Address, like play.example.com:25565:", parent=self.dlg)
+        if not ip:
+            return
+        try:
+            add_server(self.inst, name, ip)
+            self.reload()
+            self.msg.config(text="Added.")
+        except Exception as e:  # noqa: BLE001
+            self.msg.config(text=str(e))
+
+    def remove(self):
+        sel = self.tree.selection()
+        if not sel:
+            self.msg.config(text="Select a server to remove.")
+            return
+        try:
+            remove_server(self.inst, sel[0])
+            self.reload()
+        except Exception as e:  # noqa: BLE001
+            self.msg.config(text=str(e))
+
+
+def run_core_fix(args):
+    """Apply one 'Fix it' action by running the same command the CLI would."""
+    cmd = [sys.executable] + ([] if getattr(sys, "frozen", False) else [os.path.abspath(__file__)]) + ["--cli"] + list(args)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300, creationflags=NOWIN)
+    for ln in r.stdout.splitlines():
+        try:
+            ev = json.loads(ln)
+        except ValueError:
+            continue
+        if ev.get("type") == "error":
+            raise IOError(ev.get("message", "That didn't work."))
+
+
+class LaunchCheckDialog(Dialog):
+    """Problems found before launching, each with a one-click fix, then Play anyway."""
+
+    def __init__(self, app, inst, checks, go):
+        super().__init__(app, "Before you play", 560, min(640, 250 + 96 * len(checks)))
+        self.inst, self.go_cb = inst, go
+        lbl(self, f"Before you play {inst['name']}", 14, "bold").pack(anchor="w", padx=22, pady=(20, 2))
+        hint(self, "Spectra noticed a few things that could cause trouble.", 500).pack(anchor="w", padx=22)
+        self.box = tk.Frame(self, bg=C["panel"])
+        self.box.pack(fill="both", expand=True, padx=22, pady=12)
+        foot = tk.Frame(self, bg=C["panel"])
+        foot.pack(fill="x", padx=22, pady=(0, 18))
+        Btn(foot, "Play anyway", self.play, "primary", h=38).pack(side="right")
+        Btn(foot, "Cancel", self.destroy, "secondary", h=38).pack(side="right", padx=(0, 8))
+        self.show(checks)
+
+    def show(self, checks):
+        for ch in self.box.winfo_children():
+            ch.destroy()
+        for c in checks:
+            card = tk.Frame(self.box, bg=C["card2"], padx=14, pady=10)
+            card.pack(fill="x", pady=(0, 8))
+            mark = "⚠ " if c["level"] == "warn" else "ℹ "
+            hint(card, mark + c["message"], 470).pack(anchor="w")
+            if c.get("fixes"):
+                row = tk.Frame(card, bg=C["card2"])
+                row.pack(anchor="w", pady=(8, 0))
+                for f in c["fixes"]:
+                    Btn(row, f["label"], lambda f=f: self.fix(f), "secondary", h=32, bg=C["card2"]).pack(side="left", padx=(0, 8))
+
+    def fix(self, f):
+        def done(_r):
+            if not self.winfo_exists():
+                return
+            fresh = load_json(INSTANCES / self.inst["id"] / "instance.json", None) or self.inst
+            self.inst = fresh
+            left = [c for c in launch_checks(fresh) if c["level"] != "info"]
+            if left:
+                self.show(left)
+            else:
+                self.play()
+        self.app.bg(lambda: run_core_fix(f["args"]), done, lambda e: self.app.toast(f"Couldn't fix that: {e}", "err"))
+
+    def play(self):
+        cb = self.go_cb
+        self.destroy()
+        cb()
+
+
 class ScreenshotsTab(tk.Frame):
     TW, TH, GAP = 210, 140, 14
 
@@ -5684,6 +5818,7 @@ class ModpacksPage(tk.Frame):
         _, right, self.sub = app.header(self, "Discover", "Find a modpack on Modrinth or CurseForge and install it in one click.")
         Btn(right, "Import file…", self.import_file, "secondary", h=42).pack(side="right")
         Btn(right, "From other launchers…", self.import_launchers, "secondary", h=42).pack(side="right", padx=(0, 8))
+        Btn(right, "Mod list code…", app.import_modlist, "secondary", h=42).pack(side="right", padx=(0, 8))
         bar = tk.Frame(self, bg=C["bg"])
         bar.pack(fill="x", padx=32, pady=(0, 8))
         self.q = tk.StringVar()
@@ -6095,12 +6230,42 @@ class SettingsPage(tk.Frame):
         self.v_outro.trace_add("write", lambda *_: (app.cfg.__setitem__("outro", bool(self.v_outro.get())), app.save_cfg()))
         self.v_splash.trace_add("write", lambda *_: (app.cfg.__setitem__("splash", bool(self.v_splash.get())), app.save_cfg()))
 
+        ex = Card(body, height=270)
+        ex.pack(fill="x", pady=(0, 14))
+        self.v_backup = tk.BooleanVar(value=app.cfg.get("auto_backup", True))
+        switch_row(ex.body, "Back up worlds automatically before playing", self.v_backup,
+                   "Keeps the newest few backups per instance, so a bad crash never costs a world.").pack(fill="x")
+        self.v_backup.trace_add("write", lambda *_: (app.cfg.__setitem__("auto_backup", bool(self.v_backup.get())), app.save_cfg()))
+        self.v_presence = tk.BooleanVar(value=app.cfg.get("presence", False))
+        switch_row(ex.body, "Show what I'm playing on Discord", self.v_presence,
+                   "Needs the Discord desktop app open. Only the instance name and Minecraft version are shown."
+                   ).pack(fill="x", pady=(14, 0))
+        self.v_presence.trace_add("write", lambda *_: (app.cfg.__setitem__("presence", bool(self.v_presence.get())), app.save_cfg()))
+        field_label(ex.body, "Discord application ID").pack(anchor="w", pady=(14, 6))
+        self.v_did = tk.StringVar(value=app.cfg.get("discord_client_id", ""))
+        dr = tk.Frame(ex.body, bg=C["card"])
+        dr.pack(fill="x")
+        Btn(dr, "Save", self.save_did, "primary", h=38, bg=C["card"]).pack(side="right", padx=(8, 0))
+        entry(dr, self.v_did, bg=C["card2"]).pack(side="left", fill="x", expand=True)
+
         card2 = Card(body, height=130)
         card2.pack(fill="x")
         b2 = card2.body
         field_label(b2, "Data folder").pack(anchor="w", pady=(2, 6))
         lbl(b2, str(ROOT), 10, color=C["muted"], bg=C["card"]).pack(anchor="w")
         Btn(b2, "Open folder", lambda: open_path(ROOT), "secondary", h=34, bg=C["card"]).pack(anchor="w", pady=(10, 0))
+
+    def save_did(self):
+        did = self.v_did.get().strip()
+        if did and not did.isdigit():
+            self.app.toast("The Discord application ID is a number", "err")
+            return
+        if did:
+            self.app.cfg["discord_client_id"] = did
+        else:
+            self.app.cfg.pop("discord_client_id", None)
+        self.app.save_cfg()
+        self.app.toast("Discord ID saved" if did else "Discord ID removed")
 
     def save_key(self):
         key = self.v_key.get().strip()
@@ -6625,7 +6790,7 @@ class App:
         return next((i for i in self.instances if i["id"] == iid), None)
 
     def refresh_instances(self, select=None):
-        self.instances = list_instances()
+        self.instances = sorted(list_instances(), key=lambda i: not i.get("favorite"))
         if select:
             self.sel_id = select
         if not self.instance_by_id(self.sel_id):
@@ -6663,6 +6828,12 @@ class App:
         m.add_command(label="Worlds and backups…", command=lambda: self.edit_instance(iid, tab="worlds"))
         m.add_command(label="Screenshots…", command=lambda: self.edit_instance(iid, tab="screenshots"))
         m.add_command(label="Open folder", command=lambda: self.open_instance(iid))
+        fav = bool((load_json(INSTANCES / iid / "instance.json", {}) or {}).get("favorite"))
+        m.add_command(label="Remove from favorites" if fav else "Add to favorites",
+                      command=lambda: self.set_favorite(iid, not fav))
+        m.add_separator()
+        m.add_command(label="Copy mod list code", command=lambda: self.copy_modlist(iid))
+        m.add_command(label="Save support file…", command=lambda: self.support_file(iid))
         m.add_separator()
         m.add_command(label="Duplicate…", command=lambda: self.duplicate(iid))
         m.add_command(label="Export…", command=lambda: self.export(iid))
@@ -6738,6 +6909,7 @@ class App:
         Btn(foot, "Copy log", copy, "secondary", h=38).pack(side="right", padx=(0, 8))
         Btn(foot, "Crash reports", lambda: open_path(game_dir_of(inst) / "crash-reports"), "secondary",
             h=38).pack(side="right", padx=(0, 8))
+        Btn(foot, "Support file", lambda: self.support_file(inst["id"]), "secondary", h=38).pack(side="right", padx=(0, 8))
 
     def export(self, iid=None):
         inst = self.selected_instance(iid)
@@ -6750,6 +6922,49 @@ class App:
             self.toast("Exporting…")
             self.bg(lambda: export_instance(inst, dest), lambda _r: self.toast("Exported"),
                     lambda e: self.toast(f"Export failed: {e}", "err"))
+
+    def set_favorite(self, iid, on):
+        inst = load_json(INSTANCES / iid / "instance.json", None)
+        if inst:
+            inst["favorite"] = bool(on)
+            save_instance(inst)
+            self.refresh_instances()
+            self.toast("Added to favorites" if on else "Removed from favorites")
+
+    def support_file(self, iid=None):
+        inst = self.selected_instance(iid)
+        if not inst:
+            return
+        safe = re.sub(r"[^\w.-]+", "_", inst["name"])
+        dest = filedialog.asksaveasfilename(parent=self.root, title="Save support file", defaultextension=".zip",
+                                            initialfile=f"Spectra-support-{safe}.zip", filetypes=[("Zip file", "*.zip")])
+        if dest:
+            self.toast("Collecting support info…")
+            self.bg(lambda: make_support_bundle(inst, dest),
+                    lambda _r: (self.toast("Saved. It never contains your account or sign-in."), open_path(Path(dest).parent)),
+                    lambda e: self.toast(f"Couldn't save it: {e}", "err"))
+
+    def copy_modlist(self, iid=None):
+        inst = self.selected_instance(iid)
+        if not inst:
+            return
+        try:
+            code = modlist_code(inst)
+        except Exception as e:  # noqa: BLE001
+            self.toast(f"Couldn't build a mod list code: {e}", "err")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(code)
+        self.toast("Mod list code copied. A friend can paste it with Import mod list.")
+
+    def import_modlist(self):
+        code = simpledialog.askstring("Import mod list", "Paste a mod list code (SPMOD1:…):", parent=self.root)
+        if not code or not code.strip():
+            return
+        self.toast("Importing mod list…")
+        self.bg(lambda: import_modlist(code.strip(), "", self.log),
+                lambda inst: (self.refresh_instances(select=inst["id"]), self.toast(f"Imported {inst['name']}")),
+                lambda e: self.toast(f"Couldn't import: {e}", "err"))
 
     def open_instance(self, iid=None):
         inst = self.selected_instance(iid)
@@ -6764,7 +6979,7 @@ class App:
             self.toast(f"Deleted {inst['name']}")
 
     # ---- launching
-    def launch(self, iid=None):
+    def launch(self, iid=None, server=None):
         if self.busy:
             return
         inst = self.selected_instance(iid)
@@ -6775,10 +6990,20 @@ class App:
             self.show_page("accounts")
             self.toast("Sign in with your Microsoft account first", "err")
             return
-        self.q.put(("busy", True))
-        threading.Thread(target=self.worker, args=(inst, acct), daemon=True).start()
 
-    def worker(self, inst, acct):
+        def go():
+            self.q.put(("busy", True))
+            threading.Thread(target=self.worker, args=(inst, acct, server), daemon=True).start()
+
+        def checked(found):
+            found = [c for c in found if c["level"] != "info"]
+            if found:
+                LaunchCheckDialog(self, inst, found, go)
+            else:
+                go()
+        self.bg(lambda: launch_checks(inst), checked, lambda _e: go())
+
+    def worker(self, inst, acct, server=None):
         try:
             acct = self.fresh_account(acct)
             cfg_now = load_json(CONFIG, {})
@@ -6789,6 +7014,9 @@ class App:
                 except Exception as e:  # noqa: BLE001  (a failed backup must never stop you playing)
                     self.log(f"WARNING: automatic backup skipped: {e}")
             cmd, game_dir = Core(self.log, self.progress).prepare(inst, acct)
+            if server:
+                cmd = list(cmd) + quick_play_args(inst["version"], server)
+                self.log(f"Joining {server} on launch...")
             try:
                 sync_cursor_mod(inst, self.cursor_scope() in ("minecraft", "system"), self.log)
             except Exception as e:  # noqa: BLE001
@@ -6801,11 +7029,23 @@ class App:
             self.q.put(("running", f"{inst['name']}"))
             t0 = time.time()
             tail = []
+            rpc = None
+            if cfg_now.get("presence") and cfg_now.get("discord_client_id"):
+                try:
+                    rpc = DiscordPresence(cfg_now["discord_client_id"])
+                    if rpc.connect():
+                        rpc.set(f"Playing {inst['name']}", f"Minecraft {inst['version']} \u00b7 {loader_label(inst)}", t0)
+                    else:
+                        rpc = None
+                except Exception:  # noqa: BLE001
+                    rpc = None
             for line in proc.stdout:
                 self.log(line.rstrip())
                 tail.append(line.rstrip())
                 del tail[:-80]
             code = proc.wait()
+            if rpc:
+                rpc.close()
             fresh = load_json(INSTANCES / inst["id"] / "instance.json", None) or inst
             fresh["playtime_s"] = int(fresh.get("playtime_s", 0)) + int(time.time() - t0)
             fresh["last_played"] = int(time.time())
@@ -7336,7 +7576,7 @@ def _mod_index(inst):
     if not mods.is_dir():
         return out
     for jar in sorted(mods.glob("*.jar")):
-        ids, name = set(), jar.stem
+        ids, name, deps, mc = set(), jar.stem, set(), None
         try:
             with zipfile.ZipFile(jar) as z:
                 names = set(z.namelist())
@@ -7344,6 +7584,10 @@ def _mod_index(inst):
                     meta = json.loads(z.read("fabric.mod.json").decode("utf-8", "replace"))
                     ids.add(str(meta.get("id", "")))
                     name = meta.get("name") or name
+                    dep = meta.get("depends") or {}
+                    if isinstance(dep, dict):
+                        deps = set(dep)
+                        mc = dep.get("minecraft")
                 elif "quilt.mod.json" in names:
                     meta = json.loads(z.read("quilt.mod.json").decode("utf-8", "replace"))
                     ql = meta.get("quilt_loader", {})
@@ -7359,7 +7603,7 @@ def _mod_index(inst):
         except (OSError, zipfile.BadZipFile, ValueError, KeyError):
             pass
         ids.discard("")
-        out.append({"file": jar.name, "name": str(name), "ids": ids})
+        out.append({"file": jar.name, "name": str(name), "ids": ids, "deps": deps, "mc": mc})
     return out
 
 
@@ -7509,6 +7753,291 @@ class DiscordPresence:
             except OSError:
                 pass
         self.sock = self.pipe = None
+
+
+# --------------------------------------------------------------------------
+# Launch checks, support bundle, mod list share codes
+# --------------------------------------------------------------------------
+def physical_ram_gb():
+    try:
+        if OS == "osx":
+            return int(subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=5).stdout) / 2 ** 30
+        if OS == "linux":
+            for ln in Path("/proc/meminfo").read_text().splitlines():
+                if ln.startswith("MemTotal:"):
+                    return int(ln.split()[1]) / 2 ** 20
+        if OS == "windows":
+            import ctypes
+
+            class _MS(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("sullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            st = _MS()
+            st.dwLength = ctypes.sizeof(_MS)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st))
+            return st.ullTotalPhys / 2 ** 30
+    except Exception:  # noqa: BLE001
+        pass
+    return 0.0
+
+
+def _vt(text):
+    nums = [int(x) for x in re.findall(r"\d+", str(text).split("-")[0])][:3]
+    if not nums:
+        raise ValueError("no version")
+    return tuple(nums + [0] * (3 - len(nums)))
+
+
+def mc_satisfies(expr, version):
+    """Does Minecraft `version` match a Fabric-style `depends.minecraft` expression? Unknown forms count as yes."""
+    try:
+        v = _vt(version)
+        if isinstance(expr, list):
+            return any(mc_satisfies(e, version) for e in expr)
+        expr = str(expr).strip()
+        if expr in ("", "*"):
+            return True
+        for alt in expr.split("||"):
+            ok = True
+            for clause in alt.split():
+                m = re.match(r"^(>=|<=|>|<|=|~|\^)?(.+)$", clause)
+                op, val = m.group(1) or "=", m.group(2)
+                if "x" in val.lower() or "*" in val:
+                    pre = [int(p) for p in re.split(r"\.", val) if p.isdigit()]
+                    ok = ok and tuple(v[:len(pre)]) == tuple(pre)
+                    continue
+                t = _vt(val)
+                if op == ">=":
+                    ok = ok and v >= t
+                elif op == ">":
+                    ok = ok and v > t
+                elif op == "<=":
+                    ok = ok and v <= t
+                elif op == "<":
+                    ok = ok and v < t
+                elif op == "~":
+                    ok = ok and v >= t and v[:2] == t[:2]
+                elif op == "^":
+                    ok = ok and v >= t and v[0] == t[0]
+                else:
+                    ok = ok and v == t
+            if ok:
+                return True
+        return False
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def required_java_major(version):
+    try:
+        v = _vt(version)
+    except ValueError:
+        return 8
+    if v[0] >= 26:
+        return 25
+    if v >= (1, 20, 5):
+        return 21
+    if v >= (1, 18, 0):
+        return 17
+    if v >= (1, 17, 0):
+        return 16
+    return 8
+
+
+def launch_checks(inst):
+    """Problems worth knowing about before playing: [{id, level, message, fixes:[{label, args}]}]."""
+    out = []
+    iid = inst["id"]
+    try:
+        jp = (inst.get("java") or "").strip()
+        need = required_java_major(inst["version"])
+        if jp:
+            m = java_major(jp)
+            if not m:
+                out.append({"id": "java", "level": "warn", "message": "The Java you chose for this instance doesn't work.",
+                            "fixes": [{"label": "Use automatic Java", "args": ["update", iid, "--java="]}]})
+            elif (m != 8) if need <= 8 else (m < need):
+                out.append({"id": "java", "level": "warn",
+                            "message": f"This instance uses Java {m}, but Minecraft {inst['version']} needs Java {need} or newer.",
+                            "fixes": [{"label": "Use automatic Java", "args": ["update", iid, "--java="]}]})
+        total = physical_ram_gb()
+        ram = int(inst.get("ram_gb", 4))
+        if total and ram > total * 0.75:
+            half = max(2, int(total // 2))
+            out.append({"id": "ram", "level": "warn",
+                        "message": f"{ram} GB is most of this computer's {total:.0f} GB of memory. The game and your system may slow down.",
+                        "fixes": [{"label": f"Use {half} GB", "args": ["update", iid, "--ram", str(half)]}]})
+        mods = _mod_index(inst)
+        if len(mods) > 30 and ram < 4 and (not total or total >= 8):
+            out.append({"id": "ram-low", "level": "info",
+                        "message": f"{len(mods)} mods usually want at least 4 GB of memory (this instance has {ram} GB).",
+                        "fixes": [{"label": "Use 4 GB", "args": ["update", iid, "--ram", "4"]}]})
+        # two jars for the same mod
+        owners = {}
+        for m in mods:
+            for mid in m["ids"]:
+                owners.setdefault(mid, []).append(m)
+        for mid, ms in owners.items():
+            files = sorted({m["file"] for m in ms})
+            if len(files) > 1 and mid not in ("minecraft", "java"):
+                out.append({"id": "dupe:" + mid, "level": "warn",
+                            "message": f"{ms[0]['name']} is installed twice ({', '.join(files)}). Two copies usually crash the game.",
+                            "fixes": [{"label": f"Turn off {files[-1]}",
+                                       "args": ["content-toggle", iid, "--kind", "mods", "--file", files[-1]]}]})
+        # Fabric API missing
+        if loader_of(inst) in ("fabric", "quilt") and "fabric-api" not in owners and "quilted_fabric_api" not in owners:
+            needers = [m["name"] for m in mods if m.get("deps", set()) & {"fabric-api", "fabric"}]
+            if needers:
+                out.append({"id": "fabric-api", "level": "warn",
+                            "message": f"{len(needers)} mod(s) need Fabric API, which isn't installed ({', '.join(needers[:3])}).",
+                            "fixes": [{"label": "Install Fabric API",
+                                       "args": ["content-install", iid, "--kind", "mods", "--project", "P7dR8mSH", "--source", "modrinth"]}]})
+        # mods built for other Minecraft versions
+        if re.match(r"^\d+\.\d+(\.\d+)?$", str(inst["version"])):
+            wrong = [m for m in mods if m.get("mc") is not None and not mc_satisfies(m["mc"], inst["version"])]
+            if wrong:
+                out.append({"id": "mc-mismatch", "level": "warn",
+                            "message": f"{len(wrong)} mod(s) say they don't support Minecraft {inst['version']}: "
+                                       + ", ".join(m["name"] for m in wrong[:4]) + ("…" if len(wrong) > 4 else "") + ".",
+                            "fixes": [{"label": f"Turn off {m['name']}",
+                                       "args": ["content-toggle", iid, "--kind", "mods", "--file", m["file"]]} for m in wrong[:3]]})
+        try:
+            free = shutil.disk_usage(ROOT).free / 2 ** 30
+            if free < 2:
+                out.append({"id": "disk", "level": "warn", "message": f"Only {free:.1f} GB of disk space is free. The game may fail to start.",
+                            "fixes": []})
+        except OSError:
+            pass
+    except Exception as e:  # noqa: BLE001  (a broken check must never stop you playing)
+        out.append({"id": "check-error", "level": "info", "message": f"Couldn't finish the checks: {e}", "fixes": []})
+    return out
+
+
+_SECRET_PATTERNS = [
+    (re.compile(r"(--accessToken\s+)\S+", re.I), r"\1<redacted>"),
+    (re.compile(r"(access_?token[\"'=: ]+)[A-Za-z0-9._\-]{12,}", re.I), r"\1<redacted>"),
+    (re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{5,}"), "<token>"),
+    (re.compile(r"(Setting user:\s*)\S+"), r"\1<name>"),
+    (re.compile(r"(--username\s+)\S+"), r"\1<name>"),
+    (re.compile(r"(--uuid\s+)\S+"), r"\1<uuid>"),
+]
+
+
+def redact(text):
+    try:
+        home = str(Path.home())
+        if home and len(home) > 3:
+            text = text.replace(home, "~")
+    except RuntimeError:
+        pass
+    for pat, rep in _SECRET_PATTERNS:
+        text = pat.sub(rep, text)
+    return text
+
+
+def make_support_bundle(inst, dest):
+    """A zip with logs, settings and mod list for asking for help. Never includes accounts or tokens."""
+    gd = game_dir_of(inst)
+    info = [f"Spectra {APP_VERSION}", f"OS: {platform.platform()}  ({platform.machine()})",
+            f"Python: {platform.python_version()}", f"Memory: {physical_ram_gb():.1f} GB",
+            f"Instance: {inst['name']}  ·  Minecraft {inst['version']}  ·  {loader_label(inst)}",
+            f"RAM setting: {inst.get('ram_gb', 4)} GB", f"Java setting: {inst.get('java') or 'automatic'}",
+            f"JVM args: {inst.get('jvm_args') or '(none)'}", ""]
+    jp = (inst.get("java") or "").strip()
+    if jp:
+        info.append(f"Chosen Java reports major version: {java_major(jp)}")
+    managed = RUNTIME / str(required_java_major(inst["version"]))
+    if managed.exists():
+        j = find_java_in(managed)
+        info.append(f"Spectra's own Java {required_java_major(inst['version'])}: {j} (major {java_major(j) if j else '?'})")
+    info.append("")
+    info.append("Launch checks:")
+    for c in launch_checks(inst):
+        info.append(f" - [{c['level']}] {c['message']}")
+    mods = []
+    mdir = gd / "mods"
+    if mdir.is_dir():
+        for p in sorted(mdir.iterdir()):
+            if p.suffix == ".jar" or p.name.endswith(".jar.disabled"):
+                mods.append(p.name)
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("info.txt", redact("\n".join(info)))
+        z.writestr("mods.txt", "\n".join(mods) or "(no mods)")
+        keep = {k: inst.get(k) for k in ("name", "version", "loader", "loader_version", "ram_gb", "java", "jvm_args", "perf_flags")}
+        z.writestr("instance.json", redact(json.dumps(keep, indent=2)))
+        latest = gd / "logs" / "latest.log"
+        if latest.exists():
+            lines = latest.read_text("utf-8", "replace").splitlines()[-2500:]
+            z.writestr("latest.log", redact("\n".join(lines)))
+        reports = sorted((gd / "crash-reports").glob("crash-*.txt"), key=lambda p: p.stat().st_mtime, reverse=True) \
+            if (gd / "crash-reports").is_dir() else []
+        if reports:
+            z.writestr(reports[0].name, redact(reports[0].read_text("utf-8", "replace")[-300_000:]))
+    return dest
+
+
+def modlist_code(inst):
+    items = []
+    for pid in inst.get("mods", {}):
+        pid = str(pid)
+        items.append({"s": "cf", "p": pid[3:]} if pid.startswith("cf:") else {"s": "mr", "p": pid})
+    data = {"v": 1, "n": inst["name"], "mc": inst["version"], "l": loader_of(inst), "m": items}
+    raw = zlib.compress(json.dumps(data, separators=(",", ":")).encode(), 9)
+    return "SPMOD1:" + base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def modlist_parse(text):
+    text = text.strip()
+    if os.path.isfile(text):
+        text = Path(text).read_text("utf-8", "replace").strip()
+    if not text.startswith("SPMOD1:"):
+        raise IOError("That isn't a Spectra mod list code.")
+    body = text[7:].strip()
+    try:
+        d = zlib.decompressobj()
+        raw = d.decompress(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)), 1_000_000)
+        data = json.loads(raw.decode())
+    except Exception as e:  # noqa: BLE001
+        raise IOError("That mod list code is damaged.") from e
+    if data.get("v") != 1 or data.get("l") not in LOADERS or not re.match(r"^[\w.\-]{1,32}$", str(data.get("mc", ""))):
+        raise IOError("That mod list isn't something this version of Spectra understands.")
+    if not isinstance(data.get("m"), list) or len(data["m"]) > 400:
+        raise IOError("That mod list is too large.")
+    return data
+
+
+def import_modlist(text, name, log):
+    data = modlist_parse(text)
+    name = (name or data.get("n") or "Imported mods").strip()[:60] or "Imported mods"
+    inst = {"id": new_instance_id(name), "name": name, "version": data["mc"], "loader": data["l"], "ram_gb": 4,
+            "java": "", "jvm_args": "", "auto_fabric_api": data["l"] == "fabric", "mods": {}}
+    save_instance(inst)
+    mods_dir = game_dir_of(inst) / "mods"
+    mods_dir.mkdir(parents=True, exist_ok=True)
+    seen, skipped = set(), 0
+    for it in data["m"]:
+        pid = str(it.get("p", "")) if isinstance(it, dict) else ""
+        if it.get("s") == "mr" and re.match(r"^[A-Za-z0-9]{8}$", pid):
+            try:
+                install_project(inst["version"], pid, mods_dir, inst["mods"], log, seen, loader_of(inst))
+            except Exception as e:  # noqa: BLE001
+                log(f"WARNING: couldn't install {pid}: {e}")
+                skipped += 1
+        else:
+            skipped += 1
+    if skipped:
+        log(f"{skipped} mod(s) couldn't be installed (CurseForge mods and unavailable ones are skipped).")
+    save_instance(inst)
+    return inst
+
+
+def cli_launch_check(iid):
+    cli_emit(type="checks", checks=launch_checks(cli_inst(iid)))
 
 
 def cli_servers(iid):
@@ -7866,6 +8395,17 @@ def cli_main(argv):
     p.add_argument("--ip", required=True)
     p = sub.add_parser("crash-analyze")
     p.add_argument("id")
+    p = sub.add_parser("launch-check")
+    p.add_argument("id")
+    p = sub.add_parser("support-bundle")
+    p.add_argument("id")
+    p.add_argument("--out", required=True)
+    p = sub.add_parser("modlist-export")
+    p.add_argument("id")
+    p.add_argument("--out")
+    p = sub.add_parser("modlist-import")
+    p.add_argument("code")
+    p.add_argument("--name", default="")
     p = sub.add_parser("create")
     p.add_argument("--name", required=True)
     p.add_argument("--version", required=True)
@@ -7978,6 +8518,19 @@ def cli_main(argv):
             cli_servers(a.id)
         elif a.cmd == "crash-analyze":
             cli_crash_analyze(a.id)
+        elif a.cmd == "launch-check":
+            cli_launch_check(a.id)
+        elif a.cmd == "support-bundle":
+            make_support_bundle(cli_inst(a.id), a.out)
+            cli_emit(type="exported", path=a.out)
+        elif a.cmd == "modlist-export":
+            code = modlist_code(cli_inst(a.id))
+            if a.out:
+                Path(a.out).write_text(code + "\n")
+            cli_emit(type="exported", path=a.out or "", code=code)
+        elif a.cmd == "modlist-import":
+            inst = import_modlist(a.code, a.name, cli_log)
+            cli_emit(type="instance", instance=cli_instance_dict(load_json(INSTANCES / inst["id"] / "instance.json", inst)))
         elif a.cmd == "create":
             cli_create(a.name.strip(), a.version, a.loader, a.boost)
         elif a.cmd == "delete":

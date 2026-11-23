@@ -64,6 +64,7 @@ struct RootView: View {
         .sheet(item: $store.editing) { EditInstanceSheet(inst: $0) }
         .sheet(item: $store.draft) { SkinMakerView(ed: $0) }
         .sheet(item: $store.crash) { CrashSheet(info: $0) }
+        .sheet(item: $store.pendingLaunch) { LaunchCheckSheet(pending: $0) }
         .onDrop(of: [.fileURL], isTargeted: $dropping) { providers in
             var took = false
             for p in providers {
@@ -112,11 +113,14 @@ struct SidebarView: View {
                 }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .help("Sort instances")
-                Button { store.pickImport() } label: {
+                Menu {
+                    Button("Import a modpack or instance…") { store.pickImport() }
+                    Button("Import a mod list code…") { store.importModList() }
+                } label: {
                     Image(systemName: "square.and.arrow.down").font(.system(size: 12, weight: .semibold)).frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
-                .help("Import a modpack or instance")
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .help("Import a modpack, instance or mod list")
                 Button { store.showNew = true } label: {
                     Image(systemName: "plus").font(.system(size: 13, weight: .semibold)).frame(width: 28, height: 28)
                 }
@@ -271,6 +275,7 @@ struct TopBar: View {
 
 struct AccountChip: View {
     @EnvironmentObject var store: Store
+    @State private var showMenu = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -288,7 +293,33 @@ struct AccountChip: View {
         .padding(.horizontal, 14).padding(.vertical, 8)
         .glass(cornerRadius: 18, interactive: true)
         .onTapGesture {
-            if store.account == nil { store.startSignIn() } else { store.tab = .settings }
+            if store.account == nil { store.startSignIn() } else { showMenu = true }
+        }
+        .popover(isPresented: $showMenu, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(store.accounts) { a in
+                    Button {
+                        store.switchAccount(a)
+                        showMenu = false
+                    } label: {
+                        HStack {
+                            Image(systemName: a.id == store.account?.id ? "checkmark.circle.fill" : "circle")
+                            Text(a.username)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 6).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                Divider().padding(.vertical, 4)
+                Button { showMenu = false; store.startSignIn() } label: {
+                    Label("Add account…", systemImage: "plus").padding(.horizontal, 10).padding(.vertical, 6)
+                }.buttonStyle(.plain)
+                Button { showMenu = false; store.tab = .settings } label: {
+                    Label("Manage accounts", systemImage: "gearshape").padding(.horizontal, 10).padding(.vertical, 6)
+                }.buttonStyle(.plain)
+            }
+            .padding(8).frame(minWidth: 220)
         }
     }
 }
@@ -426,6 +457,10 @@ struct HomeView: View {
                             Divider()
                             Button("Duplicate…") { store.duplicate(inst) }
                             Button("Export…") { store.export(inst) }
+                            Divider()
+                            Button("Copy mod list code") { store.copyModList(inst) }
+                            Button("Save mod list file…") { store.saveModList(inst) }
+                            Button("Save support file…") { store.saveSupportFile(inst) }
                             Button("Open crash reports") { store.openContentFolder(inst, kind: "crash-reports") }
                         } label: {
                             Image(systemName: "ellipsis").frame(width: 54, height: 54)
@@ -969,6 +1004,7 @@ struct CrashSheet: View {
                 }
                 if let inst = store.instances.first(where: { $0.name == info.name }) {
                     Button("Open crash reports") { store.openContentFolder(inst, kind: "crash-reports") }
+                    Button("Save support file…") { store.saveSupportFile(inst) }
                 }
                 Spacer()
                 Button("Close") { dismiss() }.glassButton(prominent: true).keyboardShortcut(.defaultAction)
